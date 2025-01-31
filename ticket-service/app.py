@@ -3,7 +3,7 @@ from flask_cors import CORS
 from services.generate_qrcode_service import generate_qr_code
 from services.generate_code_service import generate_code
 from utils.db import *
-from services.process_payment import process_payment
+from services.process_payment import *
 
 app = Flask(__name__)
 CORS(app)  # Habilita CORS para permitir requisições de outros domínios
@@ -82,49 +82,159 @@ def process_payment_route():
     """
     Rota Flask para processar pagamentos.
     """
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
+    
     data = request.json
+    print("Dados recebidos:", data)  # Log para debug
+    
+    if not data:
+        return jsonify({"success": False, "error": "Corpo da requisição vazio"}), 400
 
-    # Validação de campos obrigatórios
-    required_fields = [
-        'token', 'paymentMethodId', 'issuerId', 'installments',
-        'identificationNumber', 'identificationType', 'cardholderEmail', 'transaction_amount'
-    ]
-    for field in required_fields:
-        if not data.get(field):
-            return jsonify({"success": False, "error": f"Campo '{field}' ausente ou inválido"}), 400
-
-    # Preparar os dados para a função process_payment
-    payment_data = {
-        "token": data['token'],
-        "payment_method_id": data['paymentMethodId'],
-        "issuer_id": data['issuerId'],
-        "installments": int(data['installments']),
-        "transaction_amount": float(data['transaction_amount']),
-        "payer": {
-            "email": data['cardholderEmail'],
-            "identification": {
-                "type": data['identificationType'],
-                "number": data['identificationNumber']
-            }
-        }
+    # Validação mais detalhada dos campos
+    required_fields = {
+        'token': str,
+        'paymentMethodId': str,
+        'issuerId': str,
+        'installments': int,
+        'identificationNumber': str,
+        'identificationType': str,
+        'cardholderEmail': str,
+        'transaction_amount': (int, float)
     }
 
-    # Chamar a função separada para processar o pagamento
+    errors = []
+    for field, field_type in required_fields.items():
+        if field not in data:
+            errors.append(f"Campo '{field}' ausente")
+        elif not isinstance(data[field], field_type) and not (isinstance(data[field], (int, float)) and field_type in (int, float)):
+            errors.append(f"Campo '{field}' deve ser do tipo {field_type.__name__}")
+
+    if errors:
+        return jsonify({"success": False, "error": "; ".join(errors)}), 400
+
+    # Preparar os dados para a função process_payment
     try:
-        payment_response = process_payment(payment_data)
+        payment_data = {
+            "token": data['token'],
+            "payment_method_id": data['paymentMethodId'],
+            "issuer_id": data['issuerId'],
+            "installments": int(data['installments']),
+            "transaction_amount": float(data['transaction_amount']),
+            "payer": {
+                "email": data['cardholderEmail'],
+                "identification": {
+                    "type": data['identificationType'],
+                    "number": data['identificationNumber']
+                }
+            }
+        }
+    except (ValueError, TypeError) as e:
+        return jsonify({"success": False, "error": f"Erro ao converter dados: {str(e)}"}), 400
 
-        if payment_response["success"]:
-            return jsonify({"success": True, "payment": payment_response["payment"]}), 201
-        else:
+    # Chamar a função para processar o pagamento
+    payment_response = process_payment(payment_data)
+
+    if payment_response.get("success"):
+        if payment_response["status"] == "approved":
+            return jsonify({"success": True, "status": "approved", "message": "Pagamento aprovado!", "payment": payment_response["payment"]}), 200
+        elif payment_response["status"] == "in_process" or payment_response["status"] == "pending":
+            return jsonify({"success": True, "status": payment_response["status"], "message": "Pagamento em processamento.", "payment": payment_response["payment"]}), 200
+    else:
+        return jsonify({"success": False, "status": payment_response.get("status"), "error": payment_response.get("error", "Erro ao processar pagamento.")}), 400
+
+@app.route('/process_payment_pix', methods=['POST'])
+def process_payment_pix_route():
+    """
+    Rota Flask para processar pagamentos PIX.
+    """
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
+    
+    data = request.json
+    print("Dados recebidos:", data)  # Log para debug
+    
+    if not data:
+        return jsonify({"success": False, "error": "Corpo da requisição vazio"}), 400
+
+    # Validação dos campos obrigatórios
+    required_fields = {
+        'cardholderEmail': str,
+        'identificationNumber': str,
+        'identificationType': str,
+        'transaction_amount': (int, float)
+    }
+
+    errors = []
+    for field, field_type in required_fields.items():
+        if field not in data:
+            errors.append(f"Campo '{field}' ausente")
+        elif not isinstance(data[field], field_type) and not (isinstance(data[field], (int, float)) and field_type in (int, float)):
+            errors.append(f"Campo '{field}' deve ser do tipo {field_type.__name__}")
+
+    if errors:
+        return jsonify({"success": False, "error": "; ".join(errors)}), 400
+
+    # Chamar a função para processar o pagamento PIX
+    payment_response = process_payment_pix(data)
+
+    if payment_response.get("success"):
+        if payment_response["status"] == "pending":
             return jsonify({
-                "success": False,
-                "error": payment_response.get("error", "Erro ao processar pagamento"),
-                "details": payment_response.get("response", {})
-            }), 400
+                "success": True,
+                "status": "pending",
+                "message": "Pagamento PIX gerado com sucesso!",
+                "pix_qr_code": payment_response["pix_qr_code"],
+                "pix_qr_code_base64": payment_response["pix_qr_code_base64"],
+                "pix_copia_cola": payment_response["pix_copia_cola"]  # Incluindo o código PIX copia e cola
+            }), 200
+    else:
+        return jsonify({"success": False, "status": payment_response.get("status"), "error": payment_response.get("error", "Erro ao processar pagamento PIX.")}), 400
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+@app.route('/lotes', methods=['GET'])
+def listar_lotes_route():
+    lotes = listar_lotes()
+    return jsonify([{
+        "id": lote[0],
+        "nome": lote[1],
+        "descricao": lote[2],
+        "valor": lote[3],
+        "quantidade": lote[4]
+    } for lote in lotes]), 200
 
+@app.route('/lotes', methods=['POST'])
+def adicionar_lote_route():
+    data = request.json
+    nome = data.get('nome')
+    descricao = data.get('descricao')
+    valor = data.get('valor')
+    quantidade = data.get('quantidade')
+
+    if not nome or not valor or not quantidade:
+        return jsonify({'error': 'Dados incompletos'}), 400
+
+    id_lote = adicionar_lote(nome, descricao, valor, quantidade)
+    return jsonify({'id': id_lote}), 201
+
+@app.route('/lotes/<int:id>', methods=['PUT'])
+def editar_lote_route(id):
+    data = request.json
+    nome = data.get('nome')
+    descricao = data.get('descricao')
+    valor = data.get('valor')
+    quantidade = data.get('quantidade')
+
+    if editar_lote(id, nome, descricao, valor, quantidade):
+        return jsonify({'message': 'Lote atualizado com sucesso'}), 200
+    else:
+        return jsonify({'error': 'Lote não encontrado ou dados não alterados'}), 404
+
+@app.route('/lotes/<int:id>', methods=['DELETE'])
+def excluir_lote_route(id):
+    if excluir_lote(id):
+        return jsonify({'message': 'Lote excluído com sucesso'}), 200
+    else:
+        return jsonify({'error': 'Lote não encontrado'}), 404
 
 if __name__ == '__main__':
     app.run(debug=True)

@@ -24,6 +24,15 @@ def init_db(table='tickets'):
                 qr_code_path TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS lotes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                descricao TEXT,
+                valor REAL NOT NULL,
+                quantidade INTEGER NOT NULL
+            )
+        ''')
         conn.commit()
 
 def store_ticket(code, name, email, cpf, qr_code_path, table='tickets'):
@@ -125,3 +134,54 @@ def move_ticket_to_validated(code, table='tickets'):
             return True  # Retorna True se a operação for bem-sucedida
         else:
             return False  # Retorna False se o ingresso não for encontrado
+        
+def adicionar_lote(nome, descricao, valor, quantidade):
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO lotes (nome, descricao, valor, quantidade)
+            VALUES (?, ?, ?, ?)
+        ''', (nome, descricao, valor, quantidade))
+        conn.commit()
+        return cursor.lastrowid  # Retorna o ID do lote adicionado
+
+def listar_lotes():
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM lotes')
+        return cursor.fetchall()  # Retorna todos os lotes
+
+def editar_lote(id, nome=None, descricao=None, valor=None, quantidade=None):
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        updates = []
+        params = []
+
+        if nome is not None:
+            updates.append("nome = ?")
+            params.append(nome)
+        if descricao is not None:
+            updates.append("descricao = ?")
+            params.append(descricao)
+        if valor is not None:
+            updates.append("valor = ?")
+            params.append(valor)
+        if quantidade is not None:
+            updates.append("quantidade = ?")
+            params.append(quantidade)
+
+        if updates:
+            params.append(id)
+            query = f'UPDATE lotes SET {", ".join(updates)} WHERE id = ?'
+            cursor.execute(query, params)
+            conn.commit()
+            return cursor.rowcount > 0  # Retorna True se alguma linha foi atualizada
+
+    return False  # Retorna False se não houver atualizações
+
+def excluir_lote(id):
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM lotes WHERE id = ?', (id,))
+        conn.commit()
+        return cursor.rowcount > 0  # Retorna True se uma linha foi deletada
