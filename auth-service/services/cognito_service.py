@@ -3,8 +3,8 @@ import os
 import boto3
 from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+import re
 
-# Carrega as variáveis do .env
 load_dotenv()
 
 class CognitoService:
@@ -17,29 +17,28 @@ class CognitoService:
         )
         self.user_pool_id = os.getenv("AWS_COGNITO_USER_POOL_ID")
         self.client_id = os.getenv("AWS_COGNITO_CLIENT_ID")
-
+    
     def check_email_exists(self, email):
         try:
-            response = self.client.admin_get_user(
+            response = self.client.list_users(
                 UserPoolId=self.user_pool_id,
-                Username=email
+                Filter=f'email = "{email}"'
             )
-            return {"exists": True, "status": "Usuário já registrado"}
+            exists = len(response["Users"]) > 0
+            return {"exists": exists}
         except ClientError as e:
-            if e.response["Error"]["Code"] == "UserNotFoundException":
-                return {"exists": False, "status": "Usuário não encontrado"}
             raise Exception(e.response["Error"]["Message"])
-
+    
     def sign_up(self, email, password, name):
+            # Validação de senha
+        if not re.match(r"^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?\":{}|<>])[A-Za-z\d!@#$%^&*(),.?\":{}|<>]{8,}$", password):
+            raise Exception("A senha não atende aos requisitos mínimos")
         try:
             response = self.client.sign_up(
                 ClientId=self.client_id,
                 Username=email,
                 Password=password,
-                UserAttributes=[
-                    {"Name": "name", "Value": name},
-                    {"Name": "email", "Value": email},
-                ],
+                UserAttributes=[{"Name": "name", "Value": name}, {"Name": "email", "Value": email}],
             )
             return response
         except ClientError as e:
