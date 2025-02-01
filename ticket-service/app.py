@@ -4,9 +4,14 @@ from services.generate_qrcode_service import generate_qr_code
 from services.generate_code_service import generate_code
 from utils.db import *
 from services.process_payment import *
+import requests
 
 app = Flask(__name__)
-CORS(app)  # Habilita CORS para permitir requisições de outros domínios
+CORS(app, resources={
+    r"/*": {
+        "origins": "http://192.168.100.106:3000",  # Permite apenas o frontend
+    }
+})  # Habilita CORS para permitir requisições de outros domínios
 
 @app.route('/generate_ticket', methods=['POST'])
 def generate_ticket():
@@ -16,20 +21,23 @@ def generate_ticket():
     email = data.get('email')
     cpf = data.get('cpf')
     table = data.get('table')
+    user_id = data.get('user_id')
+    quantity = data.get('quantity', 1)  # Quantidade de tickets a serem gerados
 
-    if not name or not email or not cpf or not table:
+    if not name or not email or not cpf or not table or not user_id:
         return jsonify({'error': 'Dados incompletos'}), 400
 
-    code = generate_code()
-    init_db(table)
+    tickets = []
+    for _ in range(quantity):
+        code = generate_code()
+        init_db(table)
 
-    # Gera o QR Code e obtém o caminho da imagem gerada
-    qr_code_path = generate_qr_code(code)  # Gera o QR Code
+        if store_ticket(code, name, email, cpf, user_id, table):
+            tickets.append({'code': code})
+        else:
+            return jsonify({'error': 'Código já existente'}), 409
 
-    if store_ticket(code, name, email, cpf, qr_code_path, table):
-        return jsonify({'code': code, 'qr_code_path': qr_code_path}), 201  # Retorna o código e caminho do QR Code gerado
-    else:
-        return jsonify({'error': 'Código já existente'}), 409
+    return jsonify({'tickets': tickets}), 201
 
 
 @app.route('/tickets/<code>', methods=['GET'])
@@ -77,6 +85,8 @@ def validate_ticket(code):
     else:
         return jsonify({'error': 'Ingresso não encontrado ou já validado'}), 404
     
+import requests  # Adicione esta linha no início do arquivo
+
 @app.route('/process_payment', methods=['POST'])
 def process_payment_route():
     """
@@ -84,10 +94,10 @@ def process_payment_route():
     """
     if not request.is_json:
         return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
-    
+
     data = request.json
     print("Dados recebidos:", data)  # Log para debug
-    
+
     if not data:
         return jsonify({"success": False, "error": "Corpo da requisição vazio"}), 400
 
@@ -100,7 +110,8 @@ def process_payment_route():
         'identificationNumber': str,
         'identificationType': str,
         'cardholderEmail': str,
-        'transaction_amount': (int, float)
+        'transaction_amount': (int, float),
+        'user_id': str  # Novo campo para o user_id
     }
 
     errors = []
@@ -137,11 +148,54 @@ def process_payment_route():
 
     if payment_response.get("success"):
         if payment_response["status"] == "approved":
-            return jsonify({"success": True, "status": "approved", "message": "Pagamento aprovado!", "payment": payment_response["payment"]}), 200
+            # Após o pagamento ser aprovado, gerar o ingresso e associar ao usuário
+            ticket_data = {
+                "name": data.get('name'),
+                "email": data['cardholderEmail'],
+                "cpf": data['identificationNumber'],
+                "table": "tickets",
+                "user_id": data['user_id'],
+                "quantity": data.get('quantity', 1)  # Passando a quantidade de tickets
+            }
+
+            # Faz uma requisição HTTP para a rota /generate_ticket
+            try:
+                response = requests.post(
+                    "http://127.0.0.1:3000/generate_ticket",  # URL da rota
+                    json=ticket_data,  # Dados do ticket
+                    headers={"Content-Type": "application/json"}
+                )
+                if response.status_code == 201:
+                    return jsonify({
+                        "success": True,
+                        "status": "approved",
+                        "message": "Pagamento aprovado!",
+                        "ticket": response.json()
+                    }), 200
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": f"Erro ao gerar ingresso: {response.json().get('error')}"
+                    }), response.status_code
+            except Exception as e:
+                return jsonify({
+                    "success": False,
+                    "error": f"Erro ao fazer requisição para /generate_ticket: {str(e)}"
+                }), 500
+
         elif payment_response["status"] == "in_process" or payment_response["status"] == "pending":
-            return jsonify({"success": True, "status": payment_response["status"], "message": "Pagamento em processamento.", "payment": payment_response["payment"]}), 200
+            return jsonify({
+                "success": True,
+                "status": payment_response["status"],
+                "message": "Pagamento em processamento.",
+                "payment": payment_response["payment"]
+            }), 200
     else:
-        return jsonify({"success": False, "status": payment_response.get("status"), "error": payment_response.get("error", "Erro ao processar pagamento.")}), 400
+        return jsonify({
+            "success": False,
+            "status": payment_response.get("status"),
+            "error": payment_response.get("error", "Erro ao processar pagamento.")
+        }), 400
 
 @app.route('/process_payment_pix', methods=['POST'])
 def process_payment_pix_route():
@@ -235,6 +289,15 @@ def excluir_lote_route(id):
         return jsonify({'message': 'Lote excluído com sucesso'}), 200
     else:
         return jsonify({'error': 'Lote não encontrado'}), 404
+    
+@app.route('/user_tickets/<user_id>', methods=['GET'])
+def get_user_tickets(user_id):
+    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT * FROM {table} WHERE user_id = ?', (user_id,))
+        tickets = cursor.fetchall()
+        return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3]} for t in tickets]), 200
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=3000)

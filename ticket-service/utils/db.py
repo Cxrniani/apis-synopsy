@@ -21,7 +21,8 @@ def init_db(table='tickets'):
                 name TEXT NOT NULL,
                 email TEXT NOT NULL,
                 cpf TEXT NOT NULL,
-                qr_code_path TEXT
+                qr_code_path TEXT,
+                user_id TEXT  -- Adicionando o user_id para associar o ingresso ao usuário
             )
         ''')
         cursor.execute('''
@@ -35,12 +36,12 @@ def init_db(table='tickets'):
         ''')
         conn.commit()
 
-def store_ticket(code, name, email, cpf, qr_code_path, table='tickets'):
+def store_ticket(code, name, email, cpf, user_id, table='tickets'):
     with sqlite3.connect(DATABASE) as conn:
         cursor = conn.cursor()
         try:
-            cursor.execute(f'INSERT INTO {table} (code, name, email, cpf, qr_code_path) VALUES (?, ?, ?, ?, ?)',
-                           (code, name, email, cpf, qr_code_path))
+            cursor.execute(f'INSERT INTO {table} (code, name, email, cpf, user_id) VALUES (?, ?, ?, ?, ?)',
+                           (code, name, email, cpf, user_id))
             conn.commit()
             return True
         except sqlite3.IntegrityError:

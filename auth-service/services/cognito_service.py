@@ -1,8 +1,8 @@
-#/services/cognito_service.py
 import os
 import boto3
 from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+import jwt  # Importe a biblioteca jwt
 
 # Carrega as variáveis do .env
 load_dotenv()
@@ -87,4 +87,3 @@ class CognitoService:
             return response
         except ClientError as e:
             raise Exception(e.response["Error"]["Message"])
-    
