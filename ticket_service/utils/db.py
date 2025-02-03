@@ -1,238 +1,258 @@
 import os
+import boto3
+from botocore.exceptions import ClientError, WaiterError
 from dotenv import load_dotenv
-import mysql.connector
+from decimal import Decimal
 
 load_dotenv()
 
-# Configurações do banco de dados MySQL
-DB_HOST = os.environ['DB_HOST']
-DB_USER = os.environ['DB_USER']
-DB_PASSWORD = os.environ['DB_PASSWORD']
-DB_NAME = os.environ['DB_NAME']
+# Configurações do DynamoDB
+AWS_ACCESS_KEY_ID = os.environ['AWS_ACCESS_KEY_ID']
+AWS_SECRET_ACCESS_KEY = os.environ['AWS_SECRET_ACCESS_KEY']
+AWS_REGION = os.environ['AWS_REGION']
 
-def get_db_connection():
-    """Retorna uma conexão com o banco de dados MySQL."""
-    return mysql.connector.connect(
-        host=DB_HOST,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        port=3306
-    )
+# Inicializa o cliente do DynamoDB
+dynamodb = boto3.resource(
+    'dynamodb',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION
+)
 
-def init_db(table='tickets'):
-    """Inicializa o banco de dados e cria as tabelas se não existirem."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+# Nomes das tabelas
+TICKETS_TABLE = 'tickets'
+LOTES_TABLE = 'lotes'
+VALIDATED_TICKETS_TABLE = 'validated_tickets'
 
-    # Cria a tabela de tickets
-    cursor.execute(f'''
-        CREATE TABLE IF NOT EXISTS {table} (
-            code VARCHAR(255) PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            email VARCHAR(255) NOT NULL,
-            cpf VARCHAR(14) NOT NULL,
-            user_id VARCHAR(255),
-            price FLOAT,  -- Novo campo para o preço
-            lot VARCHAR(255)  -- Novo campo para o lote
-        )
-    ''')
-
-    # Cria a tabela de lotes
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS lotes (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            nome VARCHAR(255) NOT NULL,
-            descricao TEXT,
-            valor FLOAT NOT NULL,
-            quantidade INT NOT NULL
-        )
-    ''')
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def store_ticket(code, name, email, cpf, user_id, price, lot, table='tickets'):
-    """Armazena um ticket no banco de dados."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def ensure_table_exists():
+    """Cria as tabelas se não existirem."""
     try:
-        cursor.execute(f'''
-            INSERT INTO {table} (code, name, email, cpf, user_id, price, lot)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ''', (code, name, email, cpf, user_id, price, lot))
-        conn.commit()
+        # Tabela de tickets
+        dynamodb.create_table(
+            TableName=TICKETS_TABLE,
+            KeySchema=[
+                {'AttributeName': 'event_id', 'KeyType': 'HASH'},  # Partition key
+                {'AttributeName': 'code', 'KeyType': 'RANGE'}      # Sort key
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'event_id', 'AttributeType': 'S'},
+                {'AttributeName': 'code', 'AttributeType': 'S'}
+            ],
+            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+        )
+        waiter = dynamodb.meta.client.get_waiter('table_exists')
+        waiter.wait(TableName=TICKETS_TABLE, WaiterConfig={'Delay': 2, 'MaxAttempts': 10})
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ResourceInUseException':
+            raise
+
+    try:
+        # Tabela de lotes
+        dynamodb.create_table(
+            TableName=LOTES_TABLE,
+            KeySchema=[
+                {'AttributeName': 'id', 'KeyType': 'HASH'}  # Partition key
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'id', 'AttributeType': 'N'}
+            ],
+            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+        )
+        waiter = dynamodb.meta.client.get_waiter('table_exists')
+        waiter.wait(TableName=LOTES_TABLE, WaiterConfig={'Delay': 2, 'MaxAttempts': 10})
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ResourceInUseException':
+            raise
+
+    try:
+        # Tabela de tickets validados
+        dynamodb.create_table(
+            TableName=VALIDATED_TICKETS_TABLE,
+            KeySchema=[
+                {'AttributeName': 'event_id', 'KeyType': 'HASH'},  # Partition key
+                {'AttributeName': 'code', 'KeyType': 'RANGE'}      # Sort key
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'event_id', 'AttributeType': 'S'},
+                {'AttributeName': 'code', 'AttributeType': 'S'}
+            ],
+            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+        )
+        waiter = dynamodb.meta.client.get_waiter('table_exists')
+        waiter.wait(TableName=VALIDATED_TICKETS_TABLE, WaiterConfig={'Delay': 2, 'MaxAttempts': 10})
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ResourceInUseException':
+            raise
+
+def store_ticket(event_id, code, name, email, cpf, user_id, price, lot):
+    """Armazena um ticket no DynamoDB."""
+    table = dynamodb.Table(TICKETS_TABLE)
+    try:
+        table.put_item(
+            Item={
+                'event_id': event_id,
+                'code': code,
+                'name': name,
+                'email': email,
+                'cpf': cpf,
+                'user_id': user_id,
+                'price': price,
+                'lot': lot
+            },
+            ConditionExpression='attribute_not_exists(code)'  # Evita duplicação de tickets
+        )
         return True
-    except mysql.connector.IntegrityError:
-        return False  # Código já existe
-    finally:
-        cursor.close()
-        conn.close()
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+            return False  # Código já existe
+        raise
 
-def get_ticket(code, table):
-    """Recupera um ticket pelo código."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f'SELECT * FROM {table} WHERE code = %s', (code,))
-    ticket = cursor.fetchone()  # Retorna uma única linha
-    cursor.close()
-    conn.close()
-    return ticket
+def get_ticket(event_id, code):
+    """Recupera um ticket pelo event_id e código."""
+    table = dynamodb.Table(TICKETS_TABLE)
+    response = table.get_item(Key={'event_id': event_id, 'code': code})
+    return response.get('Item')
 
-def get_all_tickets(table):
-    """Recupera todos os tickets."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f'SELECT * FROM {table}')
-    tickets = cursor.fetchall()  # Retorna todas as linhas
-    cursor.close()
-    conn.close()
-    return tickets
+def get_all_tickets(event_id):
+    """Recupera todos os tickets de um evento."""
+    table = dynamodb.Table(TICKETS_TABLE)
+    response = table.query(
+        KeyConditionExpression='event_id = :event_id',
+        ExpressionAttributeValues={':event_id': event_id}
+    )
+    return response.get('Items', [])
 
-def update_ticket(code, table, name=None, email=None, cpf=None):
+def update_ticket(event_id, code, name=None, email=None, cpf=None):
     """Atualiza os dados de um ticket."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    updates = []
-    params = []
+    table = dynamodb.Table(TICKETS_TABLE)
+    update_expression = []
+    expression_attribute_values = {}
 
     if name is not None:
-        updates.append("name = %s")
-        params.append(name)
+        update_expression.append('SET #name = :name')
+        expression_attribute_values[':name'] = name
     if email is not None:
-        updates.append("email = %s")
-        params.append(email)
+        update_expression.append('SET #email = :email')
+        expression_attribute_values[':email'] = email
     if cpf is not None:
-        updates.append("cpf = %s")
-        params.append(cpf)
+        update_expression.append('SET #cpf = :cpf')
+        expression_attribute_values[':cpf'] = cpf
 
-    if updates:
-        params.append(code)
-        query = f'UPDATE {table} SET {", ".join(updates)} WHERE code = %s'
-        cursor.execute(query, params)
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return cursor.rowcount > 0  # Retorna True se alguma linha foi atualizada
+    if update_expression:
+        response = table.update_item(
+            Key={'event_id': event_id, 'code': code},
+            UpdateExpression=', '.join(update_expression),
+            ExpressionAttributeNames={
+                '#name': 'name',
+                '#email': 'email',
+                '#cpf': 'cpf'
+            },
+            ExpressionAttributeValues=expression_attribute_values,
+            ReturnValues='UPDATED_NEW'
+        )
+        return response.get('Attributes') is not None
+    return False
 
-    cursor.close()
-    conn.close()
-    return False  # Retorna False se não houver atualizações
+def delete_ticket(event_id, code):
+    """Deleta um ticket pelo event_id e código."""
+    table = dynamodb.Table(TICKETS_TABLE)
+    response = table.delete_item(Key={'event_id': event_id, 'code': code})
+    return response.get('ResponseMetadata', {}).get('HTTPStatusCode') == 200
 
-def delete_ticket(code, table='tickets'):
-    """Deleta um ticket pelo código."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f'DELETE FROM {table} WHERE code = %s', (code,))
-    conn.commit()
-    deleted = cursor.rowcount > 0  # Retorna True se uma linha foi deletada
-    cursor.close()
-    conn.close()
-    return deleted
-
-def move_ticket_to_validated(code, table='tickets'):
+def move_ticket_to_validated(event_id, code):
     """Move um ticket para a tabela de validados."""
-    validated_table = 'validated_tickets'
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    tickets_table = dynamodb.Table(TICKETS_TABLE)
+    validated_table = dynamodb.Table(VALIDATED_TICKETS_TABLE)
 
-    # Recupera os dados do ingresso da tabela original
-    cursor.execute(f'SELECT * FROM {table} WHERE code = %s', (code,))
-    ticket = cursor.fetchone()
-
+    # Recupera o ticket da tabela original
+    ticket = tickets_table.get_item(Key={'event_id': event_id, 'code': code}).get('Item')
     if ticket:
-        # Insere os dados do ingresso na tabela 'validated_tickets'
-        cursor.execute(f'''
-            INSERT INTO {validated_table} (code, name, email, cpf, qr_code_path)
-            VALUES (%s, %s, %s, %s, %s)
-        ''', (ticket[0], ticket[1], ticket[2], ticket[3], ticket[4]))
-
-        # Deleta o ingresso da tabela original
-        cursor.execute(f'DELETE FROM {table} WHERE code = %s', (code,))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return True  # Retorna True se a operação for bem-sucedida
-
-    cursor.close()
-    conn.close()
-    return False  # Retorna False se o ingresso não for encontrado
+        # Insere o ticket na tabela de validados
+        validated_table.put_item(Item=ticket)
+        # Remove o ticket da tabela original
+        tickets_table.delete_item(Key={'event_id': event_id, 'code': code})
+        return True
+    return False
 
 def adicionar_lote(nome, descricao, valor, quantidade):
     """Adiciona um novo lote."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO lotes (nome, descricao, valor, quantidade)
-        VALUES (%s, %s, %s, %s)
-    ''', (nome, descricao, valor, quantidade))
-    conn.commit()
-    lote_id = cursor.lastrowid  # Retorna o ID do lote adicionado
-    cursor.close()
-    conn.close()
-    return lote_id
+    table = dynamodb.Table(LOTES_TABLE)
+    try:
+        # Gera um ID incremental
+        last_id = max([item['id'] for item in table.scan()['Items']]) if table.scan()['Count'] > 0 else 0
+        new_id = last_id + 1
+    except KeyError:
+        new_id = 1
+
+    table.put_item(
+        Item={
+            'id': new_id,
+            'nome': nome,
+            'descricao': descricao,
+            'valor': valor,
+            'quantidade': quantidade
+        }
+    )
+    return new_id
 
 def listar_lotes():
     """Lista todos os lotes."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT * FROM lotes')
-    lotes = cursor.fetchall()  # Retorna todos os lotes
-    cursor.close()
-    conn.close()
-    return lotes
+    table = dynamodb.Table(LOTES_TABLE)
+    response = table.scan()
+    return response.get('Items', [])
 
 def editar_lote(id, nome=None, descricao=None, valor=None, quantidade=None):
     """Edita um lote existente."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    updates = []
-    params = []
+    table = dynamodb.Table(LOTES_TABLE)
+    update_expression = []
+    expression_attribute_values = {}
 
     if nome is not None:
-        updates.append("nome = %s")
-        params.append(nome)
+        update_expression.append('SET #nome = :nome')
+        expression_attribute_values[':nome'] = nome
     if descricao is not None:
-        updates.append("descricao = %s")
-        params.append(descricao)
+        update_expression.append('SET #descricao = :descricao')
+        expression_attribute_values[':descricao'] = descricao
     if valor is not None:
-        updates.append("valor = %s")
-        params.append(valor)
+        update_expression.append('SET #valor = :valor')
+        expression_attribute_values[':valor'] = valor
     if quantidade is not None:
-        updates.append("quantidade = %s")
-        params.append(quantidade)
+        update_expression.append('SET #quantidade = :quantidade')
+        expression_attribute_values[':quantidade'] = quantidade
 
-    if updates:
-        params.append(id)
-        query = f'UPDATE lotes SET {", ".join(updates)} WHERE id = %s'
-        cursor.execute(query, params)
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return cursor.rowcount > 0  # Retorna True se alguma linha foi atualizada
-
-    cursor.close()
-    conn.close()
-    return False  # Retorna False se não houver atualizações
+    if update_expression:
+        response = table.update_item(
+            Key={'id': id},
+            UpdateExpression=', '.join(update_expression),
+            ExpressionAttributeNames={
+                '#nome': 'nome',
+                '#descricao': 'descricao',
+                '#valor': 'valor',
+                '#quantidade': 'quantidade'
+            },
+            ExpressionAttributeValues=expression_attribute_values,
+            ReturnValues='UPDATED_NEW'
+        )
+        return response.get('Attributes') is not None
+    return False
 
 def excluir_lote(id):
     """Exclui um lote pelo ID."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM lotes WHERE id = %s', (id,))
-    conn.commit()
-    deleted = cursor.rowcount > 0  # Retorna True se uma linha foi deletada
-    cursor.close()
-    conn.close()
-    return deleted
+    table = dynamodb.Table(LOTES_TABLE)
+    response = table.delete_item(Key={'id': id})
+    return response.get('ResponseMetadata', {}).get('HTTPStatusCode') == 200
 
-def get_user_tickets(user_id, table='tickets'):
-    """Recupera os tickets de um usuário específico na tabela indicada."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f'SELECT * FROM {table} WHERE user_id = %s', (user_id,))
-    tickets = cursor.fetchall()  # Retorna todos os tickets encontrados
-    cursor.close()
-    conn.close()
-    return tickets
+def get_user_tickets(user_id, event_id=None):
+    """Recupera os tickets de um usuário."""
+    table = dynamodb.Table(TICKETS_TABLE)
+    if event_id:
+        response = table.scan(
+            FilterExpression='user_id = :user_id AND event_id = :event_id',
+            ExpressionAttributeValues={':user_id': user_id, ':event_id': event_id}
+        )
+    else:
+        response = table.scan(
+            FilterExpression='user_id = :user_id',
+            ExpressionAttributeValues={':user_id': user_id}
+        )
+    return response.get('Items', [])

@@ -16,11 +16,11 @@ def process_payment(payment_data):
     try:
         payment_data.pop('lot', None)
         payment_data.pop('price', None)
+        payment_data.pop('event_id', None)
         request_options = mercadopago.config.RequestOptions()
         request_options.custom_headers = {
             "x-idempotency-key": str(uuid.uuid4())
         }
-
         print("Enviando dados para o Mercado Pago:", payment_data)  # Log dos dados enviados
         payment_response = sdk.payment().create(payment_data, request_options)
 
