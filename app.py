@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from ticket_service.services.generate_qrcode_service import generate_qr_code
 from ticket_service.services.generate_code_service import generate_code
 from ticket_service.utils.db import *
 from ticket_service.services.process_payment import *
@@ -52,8 +51,10 @@ def generate_ticket():
     table = data.get('table')
     user_id = data.get('user_id')
     quantity = data.get('quantity', 1)  # Quantidade de tickets a serem gerados
+    price = data.get('price')  # Novo campo para o preço
+    lot = data.get('lot')      # Novo campo para o lote
 
-    if not name or not email or not cpf or not table or not user_id:
+    if not name or not email or not cpf or not table or not user_id or not price or not lot:
         return jsonify({'error': 'Dados incompletos'}), 400
 
     tickets = []
@@ -61,7 +62,7 @@ def generate_ticket():
         code = generate_code()
         init_db(table)
 
-        if store_ticket(code, name, email, cpf, user_id, table):
+        if store_ticket(code, name, email, cpf, user_id, price, lot, table):
             tickets.append({'code': code})
         else:
             return jsonify({'error': 'Código já existente'}), 409
@@ -118,9 +119,6 @@ import requests  # Adicione esta linha no início do arquivo
 
 @app.route('/process_payment', methods=['POST'])
 def process_payment_route():
-    """
-    Rota Flask para processar pagamentos.
-    """
     if not request.is_json:
         return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
 
@@ -140,17 +138,21 @@ def process_payment_route():
         'identificationType': str,
         'cardholderEmail': str,
         'transaction_amount': (int, float),
-        'user_id': str  # Novo campo para o user_id
+        'user_id': str,
+        'price': float,  # Novo campo para o preço
+        'lot': str              # Novo campo para o lote
     }
 
     errors = []
     for field, field_type in required_fields.items():
         if field not in data:
             errors.append(f"Campo '{field}' ausente")
-        elif not isinstance(data[field], field_type) and not (isinstance(data[field], (int, float)) and field_type in (int, float)):
-            errors.append(f"Campo '{field}' deve ser do tipo {field_type.__name__}")
+        elif not isinstance(data[field], field_type if isinstance(field_type, tuple) else (field_type,)):
+            errors.append(f"Campo '{field}' deve ser do tipo {field_type if isinstance(field_type, tuple) else field_type.__name__}")
+
 
     if errors:
+        print("Erros de validação:", errors)  # Log para debug
         return jsonify({"success": False, "error": "; ".join(errors)}), 400
 
     # Preparar os dados para a função process_payment
@@ -167,13 +169,18 @@ def process_payment_route():
                     "type": data['identificationType'],
                     "number": data['identificationNumber']
                 }
-            }
+            },
+            "lot": data['lot'],
+            "price": data['price']              # Novo campo para o lote
         }
+        print("Iniciando o processamento de pagamento com os dados:", payment_data)
     except (ValueError, TypeError) as e:
         return jsonify({"success": False, "error": f"Erro ao converter dados: {str(e)}"}), 400
 
     # Chamar a função para processar o pagamento
     payment_response = process_payment(payment_data)
+    print("Resposta do process_payment:", payment_response)  # ADICIONE ESTE PRINT
+
 
     if payment_response.get("success"):
         if payment_response["status"] == "approved":
@@ -184,7 +191,9 @@ def process_payment_route():
                 "cpf": data['identificationNumber'],
                 "table": "tickets",
                 "user_id": data['user_id'],
-                "quantity": data.get('quantity', 1)  # Passando a quantidade de tickets
+                "quantity": data.get('quantity', 1),  # Passando a quantidade de tickets
+                "price": float(data['price']),       # Novo campo para o preço
+                "lot": data['lot']                   # Novo campo para o lote
             }
 
             # Faz uma requisição HTTP para a rota /generate_ticket
@@ -319,14 +328,13 @@ def excluir_lote_route(id):
     else:
         return jsonify({'error': 'Lote não encontrado'}), 404
     
+
 @app.route('/user_tickets/<user_id>', methods=['GET'])
-def get_user_tickets(user_id):
+def get_user_tickets_route(user_id):
     table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.cursor()
-        cursor.execute(f'SELECT * FROM {table} WHERE user_id = ?', (user_id,))
-        tickets = cursor.fetchall()
-        return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3]} for t in tickets]), 200
+    tickets = get_user_tickets(user_id, table)
+    return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3], 'price': t[5], 'lot': t[6]} for t in tickets]), 200
+
     
 @app.route("/check-email", methods=["POST"])
 def check_email():
