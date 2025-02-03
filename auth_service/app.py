@@ -4,8 +4,43 @@ from services.cognito_service import CognitoService
 import jwt  # Importe a biblioteca jwt
 
 app = Flask(__name__)
-CORS(app)  # Permite chamadas de outros domínios (frontend)
+CORS(app, resources={r"/*": {"origins": "*"}})
 cognito_service = CognitoService()
+
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"error": "E-mail é obrigatório."}), 400
+
+    try:
+        print(f"Iniciando processo de redefinição de senha para: {email}")  # Debug
+        response = cognito_service.forgot_password(email)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Código de verificação enviado para o e-mail.", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao iniciar redefinição de senha: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+@app.route("/reset-password", methods=["POST"])
+def reset_password():
+    data = request.json
+    email = data.get("email")
+    code = data.get("code")
+    new_password = data.get("new_password")
+
+    if not email or not code or not new_password:
+        return jsonify({"error": "E-mail, código e nova senha são obrigatórios."}), 400
+
+    try:
+        print(f"Redefinindo senha para: {email}")  # Debug
+        response = cognito_service.confirm_forgot_password(email, code, new_password)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Senha redefinida com sucesso.", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao redefinir senha: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
 
 @app.route("/check-email", methods=["POST"])
 def check_email():
