@@ -7,12 +7,40 @@ from ticket_service.services.process_payment import *
 import requests
 from auth_service.services.cognito_service import CognitoService
 import jwt
-
+from news_service.db import init_news_db, add_news, get_all_news
 cognito_service = CognitoService()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
   # Habilita CORS para permitir requisições de outros domínios
+
+init_news_db()
+@app.route('/news/create', methods=['POST'])
+def create_news():
+    data = request.json
+    image = data.get('image')
+    title = data.get('title')
+    subtitle = data.get('subtitle')
+    date = data.get('date')
+
+    if not all([image, title, subtitle, date]):
+        return jsonify({"error": "Todos os campos são obrigatórios."}), 400
+
+    try:
+        news_id = add_news(image, title, subtitle, date)
+        return jsonify({"message": "Notícia adicionada com sucesso!", "news_id": news_id}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+@app.route('/news', methods=['GET'])
+def get_all_news_route():
+    news = get_all_news()
+    return jsonify([{
+        'id': n[0],
+        'image': n[1],
+        'title': n[2],
+        'subtitle': n[3],
+        'date': n[4]
+    } for n in news]), 200
 
 @app.route('/generate_ticket', methods=['POST'])
 def generate_ticket():
