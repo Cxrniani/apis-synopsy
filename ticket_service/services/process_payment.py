@@ -8,6 +8,7 @@ load_dotenv()
 
 # Configura o SDK do Mercado Pago
 MP_ACCESS_TOKEN = os.environ.get("MP_ACCESS_TOKEN")
+MP_CLIENT_ID = os.environ.get("MP_CLIENT_ID")
 if not MP_ACCESS_TOKEN:
     raise ValueError("MP_ACCESS_TOKEN não está configurado.")
 sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
@@ -21,6 +22,8 @@ def process_payment(payment_data):
         request_options.custom_headers = {
             "x-idempotency-key": str(uuid.uuid4())
         }
+
+
         print("Enviando dados para o Mercado Pago:", payment_data)  # Log dos dados enviados
         payment_response = sdk.payment().create(payment_data, request_options)
 

@@ -133,7 +133,7 @@ def process_payment_route():
         'cardholderEmail': str,
         'transaction_amount': (int, float),
         'user_id': str,
-        'price': float,  # Novo campo para o preço
+        'price': (int, float),  # Novo campo para o preço
         'lot': str              # Novo campo para o lote
     }
 
@@ -166,7 +166,8 @@ def process_payment_route():
             },
             "lot": data['lot'],
             "price": data['price'],
-            "event_id": data['event_id']              # Novo campo para o lote
+            "event_id": data['event_id'],
+            "application_fee": data["application_fee"],  # 2.5% de taxa
         }
         print("Iniciando o processamento de pagamento com os dados:", payment_data)
     except (ValueError, TypeError) as e:
