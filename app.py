@@ -1,3 +1,4 @@
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from ticket_service.utils.db import *
@@ -45,7 +46,6 @@ def get_all_news_route():
         'date': n[4]
     } for n in news]), 200
 
-@app.route('/generate_ticket', methods=['POST'])
 @app.route('/generate_ticket', methods=['POST'])
 def generate_ticket():
     data = request.json
@@ -110,6 +110,91 @@ def validate_ticket(event_id, code):
         return jsonify({'message': 'Ingresso validado e movido para a tabela de validados'}), 200
     else:
         return jsonify({'error': 'Ingresso não encontrado'}), 404
+    
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    # Verifica se a requisição é JSON
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
+
+    data = request.json
+    print("Dados recebidos do webhook:", data)  # Log para debug
+
+    # Verifica se o campo 'data' e 'id' estão presentes
+    if 'data' not in data or 'id' not in data['data']:
+        return jsonify({"success": False, "error": "Dados inválidos no webhook"}), 400
+
+    # Obtém o ID do pagamento
+    payment_id = data['data']['id']
+
+    try:
+        # Busca os detalhes do pagamento usando o SDK do Mercado Pago
+        payment_details = get_payment_details(payment_id)
+        print(type(payment_details))  # ADICIONE ESTE PRINT
+        print("Detalhes do pagamento:", payment_details)  # Log para debug
+
+        external_reference = payment_details.get("external_reference")
+        print(f'external_reference: {external_reference}')  # ADICIONE ESTE PRINT
+        if not external_reference:
+            return jsonify({"success": False, "error": "external_reference não encontrado"}), 40
+        
+        custom_data = json.loads(external_reference)
+
+        # Processa o status do pagamento
+        status = payment_details.get("status")
+        if status == "approved":
+            # Pagamento aprovado, gere o ingresso ou realize outras ações
+            print("Pagamento aprovado! Gerando ingresso...")
+            ticket_data = {
+            "name": custom_data['name'],
+            "email": payment_details["payer"]["email"],
+            "cpf": payment_details["payer"]["identification"]["number"],
+            "table": "tickets",
+            "user_id": custom_data["user_id"],
+            "quantity": 1,  # Ajuste conforme necessário
+            "price": custom_data["price"],
+            "lot": custom_data["lot"],
+            "event_id": custom_data["event_id"]
+            }
+            print("Dados do ticket:", ticket_data)
+
+            # Faz uma requisição HTTP para a rota /generate_ticket
+            try:
+                response = requests.post(
+                    "http://127.0.0.1:3000/generate_ticket",  # URL da rota
+                    json=ticket_data,  # Dados do ticket
+                    headers={"Content-Type": "application/json"}
+                )
+                if response.status_code == 201:
+                    return jsonify({
+                        "success": True,
+                        "status": "approved",
+                        "message": "Pagamento aprovado!",
+                        "ticket": response.json()
+                    }), 200
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": f"Erro ao gerar ingresso: {response.json().get('error')}"
+                    }), response.status_code
+            except Exception as e:
+                return jsonify({
+                    "success": False,
+                    "error": f"Erro ao fazer requisição para /generate_ticket: {str(e)}"
+                }), 500
+        elif status in ["in_process", "pending"]:
+            # Pagamento em processamento
+            print("Pagamento em processamento...")
+        else:
+            # Pagamento rejeitado ou com erro
+            print(f"Pagamento não aprovado. Status: {status}")
+
+        return jsonify({"success": True}), 200
+
+    except Exception as e:
+        print("Erro ao processar webhook:", str(e))  # Log para debug
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/process_payment', methods=['POST'])
 def process_payment_route():
@@ -151,6 +236,14 @@ def process_payment_route():
 
     # Preparar os dados para a função process_payment
     try:
+        external_reference =json.dumps({
+            "lot": data['lot'],
+            "price": data['price'],
+            "event_id": data['event_id'],
+            "user_id": data['user_id'],
+            "name": data['name'],
+        })
+
         payment_data = {
             "token": data['token'],
             "payment_method_id": data['paymentMethodId'],
@@ -164,10 +257,8 @@ def process_payment_route():
                     "number": data['identificationNumber']
                 }
             },
-            "lot": data['lot'],
-            "price": data['price'],
-            "event_id": data['event_id'],
-            "application_fee": data["application_fee"],  # 2.5% de taxa
+            "application_fee": data["application_fee"],  # 2.5% de taxa,
+            "external_reference": external_reference
         }
         print("Iniciando o processamento de pagamento com os dados:", payment_data)
     except (ValueError, TypeError) as e:
@@ -178,53 +269,14 @@ def process_payment_route():
     print("Resposta do process_payment:", payment_response)  # ADICIONE ESTE PRINT
 
 
-    if payment_response.get("success"):
-        if payment_response["status"] == "approved":
-            # Após o pagamento ser aprovado, gerar o ingresso e associar ao usuário
-            ticket_data = {
-                "name": data.get('name'),
-                "email": data['cardholderEmail'],
-                "cpf": data['identificationNumber'],
-                "table": "tickets",
-                "user_id": data['user_id'],
-                "quantity": data.get('quantity', 1),  # Passando a quantidade de tickets
-                "price": float(data['price']),       # Novo campo para o preço
-                "lot": data['lot'],
-                "event_id": data['event_id']                   # Novo campo para o lote
-            }
 
-            # Faz uma requisição HTTP para a rota /generate_ticket
-            try:
-                response = requests.post(
-                    "http://127.0.0.1:3000/generate_ticket",  # URL da rota
-                    json=ticket_data,  # Dados do ticket
-                    headers={"Content-Type": "application/json"}
-                )
-                if response.status_code == 201:
-                    return jsonify({
-                        "success": True,
-                        "status": "approved",
-                        "message": "Pagamento aprovado!",
-                        "ticket": response.json()
-                    }), 200
-                else:
-                    return jsonify({
-                        "success": False,
-                        "error": f"Erro ao gerar ingresso: {response.json().get('error')}"
-                    }), response.status_code
-            except Exception as e:
-                return jsonify({
-                    "success": False,
-                    "error": f"Erro ao fazer requisição para /generate_ticket: {str(e)}"
-                }), 500
-
-        elif payment_response["status"] == "in_process" or payment_response["status"] == "pending":
-            return jsonify({
-                "success": True,
-                "status": payment_response["status"],
-                "message": "Pagamento em processamento.",
-                "payment": payment_response["payment"]
-            }), 200
+    if payment_response["status"] == "in_process" or payment_response["status"] == "pending":
+        return jsonify({
+            "success": True,
+            "status": payment_response["status"],
+            "message": "Pagamento em processamento.",
+            "payment": payment_response["payment"]
+        }), 200
     else:
         return jsonify({
             "success": False,
@@ -247,25 +299,49 @@ def process_payment_pix_route():
         return jsonify({"success": False, "error": "Corpo da requisição vazio"}), 400
 
     # Validação dos campos obrigatórios
-    required_fields = {
+    required_fields = {        
         'cardholderEmail': str,
         'identificationNumber': str,
         'identificationType': str,
-        'transaction_amount': (int, float)
+        'transaction_amount': (int, float),
+        'user_id': str,
+        'price': (int, float),  # Novo campo para o preço
+        'lot': str              # Novo campo para o lote
     }
+
+    external_reference =json.dumps({
+            "lot": data['lot'],
+            "price": data['price'],
+            "event_id": data['event_id'],
+            "user_id": data['user_id'],
+            "name": data['name'],
+        })
+    
+    payment_data = {
+            "transaction_amount": float(data['transaction_amount']),
+            "payer": {
+                "email": data['cardholderEmail'],
+                "identification": {
+                    "type": data['identificationType'],
+                    "number": data['identificationNumber']
+                }
+            },
+            "application_fee": data["application_fee"],  # 2.5% de taxa,
+            "external_reference": external_reference
+        }
 
     errors = []
     for field, field_type in required_fields.items():
-        if field not in data:
+        if field not in payment_data:
             errors.append(f"Campo '{field}' ausente")
-        elif not isinstance(data[field], field_type) and not (isinstance(data[field], (int, float)) and field_type in (int, float)):
+        elif not isinstance(payment_data[field], field_type) and not (isinstance(payment_data[field], (int, float)) and field_type in (int, float)):
             errors.append(f"Campo '{field}' deve ser do tipo {field_type.__name__}")
 
     if errors:
         return jsonify({"success": False, "error": "; ".join(errors)}), 400
 
     # Chamar a função para processar o pagamento PIX
-    payment_response = process_payment_pix(data)
+    payment_response = process_payment_pix(payment_data)
 
     if payment_response.get("success"):
         if payment_response["status"] == "pending":

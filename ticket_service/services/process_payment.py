@@ -2,6 +2,8 @@ import mercadopago
 import os
 from dotenv import load_dotenv
 import uuid
+import hashlib
+import hmac
 
 # Carrega as variáveis de ambiente
 load_dotenv()
@@ -15,9 +17,6 @@ sdk = mercadopago.SDK(MP_ACCESS_TOKEN)
 
 def process_payment(payment_data):
     try:
-        payment_data.pop('lot', None)
-        payment_data.pop('price', None)
-        payment_data.pop('event_id', None)
         request_options = mercadopago.config.RequestOptions()
         request_options.custom_headers = {
             "x-idempotency-key": str(uuid.uuid4())
@@ -51,7 +50,21 @@ def process_payment(payment_data):
 
     except Exception as e:
         return {"success": False, "status": "error", "error": str(e)}
+    
+def get_payment_details(payment_id):
+    try:
+        # Usa o SDK do Mercado Pago para buscar os detalhes do pagamento
+        payment_response = sdk.payment().get(payment_id)
+        print("Resposta da API do Mercado Pago:", payment_response)  # Log para debug
 
+        # Verifica se a resposta foi bem-sucedida
+        if payment_response.get("status") == 200:
+            return payment_response["response"]
+        else:
+            raise Exception(f"Erro ao buscar detalhes do pagamento: {payment_response.get('message')}")
+    except Exception as e:
+        raise Exception(f"Erro ao buscar detalhes do pagamento: {str(e)}")
+    
     
 def process_payment_pix(payment_data):
     """
