@@ -5,7 +5,7 @@ from ticket_service.utils.db import *
 from ticket_service.services.process_payment import *
 from ticket_service.services.generate_code_service import generate_code
 import requests
-from auth_service.services.cognito_service import CognitoService
+from auth_service.services.cognito_service import *
 import jwt
 from news_service.db import init_news_db, add_news, get_all_news
 from decimal import Decimal
@@ -58,8 +58,11 @@ def generate_ticket():
     price = float(data.get('price'))
     lot = data.get('lot')
 
-    if not all([event_id, name, email, cpf, user_id, price, lot]):
+    print("Dados recebidos:", data)  # Log para debug
+
+    if not all([event_id, name, email, cpf, user_id, lot]) or price is None:
         return jsonify({'error': 'Dados incompletos'}), 400
+
 
     tickets = []
     for _ in range(quantity):
@@ -152,7 +155,7 @@ def webhook():
             "cpf": payment_details["payer"]["identification"]["number"],
             "table": "tickets",
             "user_id": custom_data["user_id"],
-            "quantity": 1,  # Ajuste conforme necessário
+            "quantity": custom_data['quantity'],  # Ajuste conforme necessário
             "price": custom_data["price"],
             "lot": custom_data["lot"],
             "event_id": custom_data["event_id"]
@@ -218,8 +221,9 @@ def process_payment_route():
         'cardholderEmail': str,
         'transaction_amount': (int, float),
         'user_id': str,
-        'price': (int, float),  # Novo campo para o preço
-        'lot': str              # Novo campo para o lote
+        'price': (int, float),
+        'lot': str,
+        'address': dict  # Novo campo para o endereço
     }
 
     errors = []
@@ -229,19 +233,19 @@ def process_payment_route():
         elif not isinstance(data[field], field_type if isinstance(field_type, tuple) else (field_type,)):
             errors.append(f"Campo '{field}' deve ser do tipo {field_type if isinstance(field_type, tuple) else field_type.__name__}")
 
-
     if errors:
         print("Erros de validação:", errors)  # Log para debug
         return jsonify({"success": False, "error": "; ".join(errors)}), 400
 
     # Preparar os dados para a função process_payment
     try:
-        external_reference =json.dumps({
+        external_reference = json.dumps({
             "lot": data['lot'],
             "price": data['price'],
             "event_id": data['event_id'],
             "user_id": data['user_id'],
             "name": data['name'],
+            "quantity": data['quantity']
         })
 
         payment_data = {
@@ -255,9 +259,16 @@ def process_payment_route():
                 "identification": {
                     "type": data['identificationType'],
                     "number": data['identificationNumber']
+                },
+                "address": {
+                    "street_name": data['address']['streetName'],
+                    "street_number": data['address']['streetNumber'],
+                    "zip_code": data['address']['zipCode'],
+                    "city": data['address']['city'],
+                    "federal_unit": data['address']['state']
                 }
             },
-            "application_fee": data["application_fee"],  # 2.5% de taxa,
+            "application_fee": data["application_fee"],
             "external_reference": external_reference
         }
         print("Iniciando o processamento de pagamento com os dados:", payment_data)
@@ -268,7 +279,13 @@ def process_payment_route():
     payment_response = process_payment(payment_data)
     print("Resposta do process_payment:", payment_response)  # ADICIONE ESTE PRINT
 
-
+    if payment_response["status"] == "approved":
+        return jsonify({
+            "success": True,
+            "status": "approved",
+            "message": "Pagamento aprovado!",
+            "payment": payment_response["payment"]
+        }), 200
 
     if payment_response["status"] == "in_process" or payment_response["status"] == "pending":
         return jsonify({
@@ -306,39 +323,43 @@ def process_payment_pix_route():
         'transaction_amount': (int, float),
         'user_id': str,
         'price': (int, float),  # Novo campo para o preço
-        'lot': str              # Novo campo para o lote
+        'lot': str,              # Novo campo para o lote
+        'quantity': int
     }
-
-    external_reference =json.dumps({
-            "lot": data['lot'],
-            "price": data['price'],
-            "event_id": data['event_id'],
-            "user_id": data['user_id'],
-            "name": data['name'],
-        })
-    
-    payment_data = {
-            "transaction_amount": float(data['transaction_amount']),
-            "payer": {
-                "email": data['cardholderEmail'],
-                "identification": {
-                    "type": data['identificationType'],
-                    "number": data['identificationNumber']
-                }
-            },
-            "application_fee": data["application_fee"],  # 2.5% de taxa,
-            "external_reference": external_reference
-        }
 
     errors = []
     for field, field_type in required_fields.items():
-        if field not in payment_data:
+        if field not in data:
             errors.append(f"Campo '{field}' ausente")
-        elif not isinstance(payment_data[field], field_type) and not (isinstance(payment_data[field], (int, float)) and field_type in (int, float)):
+        elif not isinstance(data[field], field_type) and not (isinstance(data[field], (int, float)) and field_type in (int, float)):
             errors.append(f"Campo '{field}' deve ser do tipo {field_type.__name__}")
 
     if errors:
         return jsonify({"success": False, "error": "; ".join(errors)}), 400
+
+    external_reference = json.dumps({
+        "lot": data['lot'],
+        "price": data['price'],
+        "event_id": data['event_id'],
+        "user_id": data['user_id'],
+        "name": data['name'],
+        "quantity": data['quantity']
+    })
+    
+    payment_data = {
+        "transaction_amount": float(data['transaction_amount']),
+        "payer": {
+            "email": data['cardholderEmail'],
+            "first_name": data["firstName"],       # Acesso direto
+            "last_name": data["lastName"],         # Acesso direto
+            "identification": {
+                "type": data['identificationType'],
+                "number": data['identificationNumber']
+            }
+        },
+        "application_fee": data["application_fee"],
+        "external_reference": external_reference
+}
 
     # Chamar a função para processar o pagamento PIX
     payment_response = process_payment_pix(payment_data)
@@ -354,7 +375,8 @@ def process_payment_pix_route():
                 "pix_copia_cola": payment_response["pix_copia_cola"]  # Incluindo o código PIX copia e cola
             }), 200
     else:
-        return jsonify({"success": False, "status": payment_response.get("status"), "error": payment_response.get("error", "Erro ao processar pagamento PIX.")}), 400
+        return jsonify({"success": False, "status": payment_response.get("status"), "error": 
+                        payment_response.get("error", "Erro ao processar pagamento PIX.")}), 400
 
 @app.route('/lotes', methods=['GET'])
 def listar_lotes_route():
@@ -529,6 +551,33 @@ def get_user():
     except Exception as e:
         print(f"Erro ao recuperar informações do usuário: {str(e)}")  # Debug
         return jsonify({"error": str(e)}), 400
+    
+@app.route('/get_user_id_by_email', methods=['POST'])
+def get_user_id_by_email():
+    """
+    Rota para buscar o ID do usuário no Amazon Cognito com base no email.
+    
+    Espera um JSON no corpo da requisição com o campo 'email'.
+    Retorna o ID do usuário ou uma mensagem de erro.
+    """
+    data = request.json
+
+    # Verifica se o email foi fornecido
+    if not data or 'email' not in data:
+        return jsonify({"status": "error", "message": "Email não fornecido"}), 400
+
+    email = data['email']
+
+    # Busca o usuário pelo email
+    result = cognito_service.get_user_by_email(email)
+
+    if result["status"] == "success":
+        # Retorna o ID do usuário (username no Cognito)
+        user_id = result["user"]["username"]
+        return jsonify({"status": "success", "user_id": user_id}), 200
+    else:
+        # Retorna a mensagem de erro
+        return jsonify({"status": "error", "message": result["message"]}), 404
 
 if __name__ == '__main__':
     app.run(debug=True, port=3000)

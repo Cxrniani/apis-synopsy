@@ -85,15 +85,18 @@ def process_payment_pix(payment_data):
             "transaction_amount": float(payment_data["transaction_amount"]),
             "payment_method_id": "pix",
             "payer": {
-                "email": payment_data["cardholderEmail"],
-                "first_name": payment_data.get("firstName", ""),
-                "last_name": payment_data.get("lastName", ""),
+                "email": payment_data["payer"]["email"],
+                "first_name": payment_data["payer"]["first_name"],
+                "last_name": payment_data["payer"]["last_name"],
                 "identification": {
-                    "type": payment_data["identificationType"],
-                    "number": payment_data["identificationNumber"]
+                    "type": payment_data["payer"]["identification"]["type"],
+                    "number": payment_data["payer"]["identification"]["number"]
                 }
-            }
+            },
+            "application_fee": payment_data["application_fee"],  # Taxa de aplicação
+            "external_reference": payment_data["external_reference"]  # Referência externa
         }, request_options)
+        print(payment_response)  # Log para depuração
 
         # Verifica a resposta do pagamento
         if payment_response.get("status") == 201:
