@@ -1,8 +1,8 @@
-#/services/cognito_service.py
 import os
 import boto3
 from dotenv import load_dotenv
 from botocore.exceptions import ClientError
+import jwt  # Importe a biblioteca jwt
 import re
 
 load_dotenv()
@@ -82,6 +82,26 @@ class CognitoService:
         try:
             response = self.client.get_user(
                 AccessToken=access_token,
+            )
+            return response
+        except ClientError as e:
+            raise Exception(e.response["Error"]["Message"])
+    def forgot_password(self, email):
+        try:
+            response = self.client.forgot_password(
+                ClientId=self.client_id,
+                Username=email
+            )
+            return response
+        except ClientError as e:
+            raise Exception(e.response["Error"]["Message"])
+    def confirm_forgot_password(self, email, code, new_password):
+        try:
+            response = self.client.confirm_forgot_password(
+                ClientId=self.client_id,
+                Username=email,
+                ConfirmationCode=code,
+                Password=new_password
             )
             return response
         except ClientError as e:

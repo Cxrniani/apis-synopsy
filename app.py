@@ -1,14 +1,14 @@
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import re
-from ticket_service.services.generate_qrcode_service import generate_qr_code
-from ticket_service.services.generate_code_service import generate_code
 from ticket_service.utils.db import *
 from ticket_service.services.process_payment import *
+from ticket_service.services.generate_code_service import generate_code
+import requests
 from auth_service.services.cognito_service import CognitoService
 import jwt
-from news_service.db import init_news_db, add_news, get_all_news, get_news_by_id
+from news_service.db import init_news_db, add_news, get_all_news
+from decimal import Decimal
 cognito_service = CognitoService()
 
 app = Flask(__name__)
@@ -89,10 +89,8 @@ def generate_ticket():
 
     tickets = []
     for _ in range(quantity):
-        code = generate_code()
-        init_db(table)
-
-        if store_ticket(code, name, email, cpf, user_id, table):
+        code = generate_code()  # Função para gerar código único
+        if store_ticket(event_id, code, name, email, cpf, user_id, Decimal(str(price)), lot):
             tickets.append({'code': code})
         else:
             return jsonify({'error': 'Código já existente'}), 409
@@ -100,47 +98,41 @@ def generate_ticket():
     return jsonify({'tickets': tickets}), 201
 
 
-@app.route('/tickets/<code>', methods=['GET'])
-def read_ticket(code):
-    table = request.args.get('table')  # Pega o nome da tabela do parâmetro de consulta
-    ticket = get_ticket(code, table)
-    
+@app.route('/tickets/<event_id>/<code>', methods=['GET'])
+def read_ticket(event_id, code):
+    ticket = get_ticket(event_id, code)
     if ticket:
-        return jsonify({'code': ticket[0], 'name': ticket[1], 'email': ticket[2], 'cpf': ticket[3]}), 200
+        return jsonify(ticket), 200
     else:
         return jsonify({'error': 'Ingresso não encontrado'}), 404
 
-@app.route('/tickets', methods=['GET'])
-def read_all_tickets():
-    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
-    tickets = get_all_tickets(table)
-    
-    return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3], 'qr_code_path': t[4]} for t in tickets]), 200
+@app.route('/tickets/<event_id>', methods=['GET'])
+def read_all_tickets(event_id):
+    tickets = get_all_tickets(event_id)
+    return jsonify(tickets), 200
 
-@app.route('/tickets/<code>', methods=['PUT'])
-def update_ticket_route(code):
+@app.route('/tickets/<event_id>/<code>', methods=['PUT'])
+def update_ticket_route(event_id, code):
     data = request.json
-    table = data.get('table', 'tickets')  # Pega o nome da tabela do corpo da requisição
     name = data.get('name')
     email = data.get('email')
     cpf = data.get('cpf')
 
-    if update_ticket(code, name=name, email=email, cpf=cpf, table=table):
+    if update_ticket(event_id, code, name, email, cpf):
         return jsonify({'message': 'Ingresso atualizado com sucesso'}), 200
     else:
         return jsonify({'error': 'Código não encontrado ou dados não alterados'}), 404
 
-@app.route('/tickets/<code>', methods=['DELETE'])
-def delete_ticket_route(code):
-    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
-    if delete_ticket(code, table):
+@app.route('/tickets/<event_id>/<code>', methods=['DELETE'])
+def delete_ticket_route(event_id, code):
+    if delete_ticket(event_id, code):
         return jsonify({'message': 'Ingresso deletado com sucesso'}), 200
     else:
         return jsonify({'error': 'Código não encontrado'}), 404
     
-@app.route('/tickets/<code>/validate', methods=['POST'])
-def validate_ticket(code):
-    if move_ticket_to_validated(code):
+@app.route('/tickets/<event_id>/<code>/validate', methods=['POST'])
+def validate_ticket(event_id, code):
+    if move_ticket_to_validated(event_id, code):
         return jsonify({'message': 'Ingresso validado e movido para a tabela de validados'}), 200
     else:
         return jsonify({'error': 'Ingresso não encontrado'}), 404
@@ -232,9 +224,6 @@ def webhook():
 
 @app.route('/process_payment', methods=['POST'])
 def process_payment_route():
-    """
-    Rota Flask para processar pagamentos.
-    """
     if not request.is_json:
         return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
 
@@ -263,10 +252,12 @@ def process_payment_route():
     for field, field_type in required_fields.items():
         if field not in data:
             errors.append(f"Campo '{field}' ausente")
-        elif not isinstance(data[field], field_type) and not (isinstance(data[field], (int, float)) and field_type in (int, float)):
-            errors.append(f"Campo '{field}' deve ser do tipo {field_type.__name__}")
+        elif not isinstance(data[field], field_type if isinstance(field_type, tuple) else (field_type,)):
+            errors.append(f"Campo '{field}' deve ser do tipo {field_type if isinstance(field_type, tuple) else field_type.__name__}")
+
 
     if errors:
+        print("Erros de validação:", errors)  # Log para debug
         return jsonify({"success": False, "error": "; ".join(errors)}), 400
 
     # Preparar os dados para a função process_payment
@@ -295,11 +286,14 @@ def process_payment_route():
             "application_fee": data["application_fee"],  # 2.5% de taxa,
             "external_reference": external_reference
         }
+        print("Iniciando o processamento de pagamento com os dados:", payment_data)
     except (ValueError, TypeError) as e:
         return jsonify({"success": False, "error": f"Erro ao converter dados: {str(e)}"}), 400
 
     # Chamar a função para processar o pagamento
     payment_response = process_payment(payment_data)
+    print("Resposta do process_payment:", payment_response)  # ADICIONE ESTE PRINT
+
 
 
     if payment_response["status"] == "in_process" or payment_response["status"] == "pending":
@@ -391,13 +385,7 @@ def process_payment_pix_route():
 @app.route('/lotes', methods=['GET'])
 def listar_lotes_route():
     lotes = listar_lotes()
-    return jsonify([{
-        "id": lote[0],
-        "nome": lote[1],
-        "descricao": lote[2],
-        "valor": lote[3],
-        "quantidade": lote[4]
-    } for lote in lotes]), 200
+    return jsonify(lotes), 200
 
 @app.route('/lotes', methods=['POST'])
 def adicionar_lote_route():
@@ -433,14 +421,13 @@ def excluir_lote_route(id):
     else:
         return jsonify({'error': 'Lote não encontrado'}), 404
     
+
 @app.route('/user_tickets/<user_id>', methods=['GET'])
-def get_user_tickets(user_id):
-    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
-    with sqlite3.connect(DATABASE) as conn:
-        cursor = conn.cursor()
-        cursor.execute(f'SELECT * FROM {table} WHERE user_id = ?', (user_id,))
-        tickets = cursor.fetchall()
-        return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3]} for t in tickets]), 200
+def get_user_tickets_route(user_id):
+    event_id = request.args.get('event_id')  # Filtro opcional por evento
+    tickets = get_user_tickets(user_id, event_id)
+    return jsonify(tickets), 200
+
     
 @app.route("/check-email", methods=["POST"])
 def check_email():
