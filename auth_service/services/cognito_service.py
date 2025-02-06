@@ -106,4 +106,37 @@ class CognitoService:
             return response
         except ClientError as e:
             raise Exception(e.response["Error"]["Message"])
+        
+    def get_user_by_email(self, email):
+        """
+        Busca um usuário no Amazon Cognito pelo email e retorna seus detalhes.
+        
+        :param email: Email do usuário a ser buscado.
+        :return: Dicionário com os detalhes do usuário ou uma mensagem de erro.
+        """
+        try:
+            response = self.client.admin_get_user(
+                UserPoolId=self.user_pool_id,
+                Username=email
+            )
+            
+            # Extrai os atributos do usuário
+            user_attributes = response.get("UserAttributes", [])
+            user_details = {attr["Name"]: attr["Value"] for attr in user_attributes}
+            
+            return {
+                "status": "success",
+                "user": {
+                    "username": response.get("Username"),
+                    "enabled": response.get("Enabled"),
+                    "user_status": response.get("UserStatus"),
+                    "created_at": response.get("UserCreateDate"),
+                    "modified_at": response.get("UserLastModifiedDate"),
+                    **user_details
+                }
+            }
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "UserNotFoundException":
+                return {"status": "error", "message": "Usuário não encontrado"}
+            raise Exception(e.response["Error"]["Message"])
     
