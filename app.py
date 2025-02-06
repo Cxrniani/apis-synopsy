@@ -49,7 +49,7 @@ def get_all_news_route():
 @app.route('/generate_ticket', methods=['POST'])
 def generate_ticket():
     data = request.json
-    event_id = data.get('event_id')  # Novo campo para identificar o evento
+    event_id = data.get('event_id')
     name = data.get('name')
     email = data.get('email')
     cpf = data.get('cpf')
@@ -58,17 +58,16 @@ def generate_ticket():
     price = float(data.get('price'))
     lot = data.get('lot')
 
-    print("Dados recebidos:", data)  # Log para debug
-
     if not all([event_id, name, email, cpf, user_id, lot]) or price is None:
         return jsonify({'error': 'Dados incompletos'}), 400
 
-
     tickets = []
     for _ in range(quantity):
-        code = generate_code()  # Função para gerar código único
+        code = generate_code()
         if store_ticket(event_id, code, name, email, cpf, user_id, Decimal(str(price)), lot):
             tickets.append({'code': code})
+            # Atualiza o saldo do administrador
+            update_admin_balance('7b87fd15-bea4-4fff-9033-9224fc0c8a01', price)  # Substitua 'admin_id' pelo ID real do administrador
         else:
             return jsonify({'error': 'Código já existente'}), 409
 
@@ -268,7 +267,6 @@ def process_payment_route():
                     "federal_unit": data['address']['state']
                 }
             },
-            "application_fee": data["application_fee"],
             "external_reference": external_reference
         }
         print("Iniciando o processamento de pagamento com os dados:", payment_data)
@@ -578,6 +576,55 @@ def get_user_id_by_email():
     else:
         # Retorna a mensagem de erro
         return jsonify({"status": "error", "message": result["message"]}), 404
+    
+@app.route('/admin/balance', methods=['GET'])
+def get_balance():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    balance = get_admin_balance(admin_id)
+    return jsonify({'balance': float(balance)}), 200
+
+@app.route('/admin/withdraw', methods=['POST'])
+def withdraw():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    data = request.json
+    amount = data.get('amount')
+
+    if amount is None:
+        return jsonify({'error': 'Amount is required'}), 400
+
+    balance = get_admin_balance(admin_id)
+    if balance < Decimal(str(amount)):
+        return jsonify({'error': 'Saldo insuficiente'}), 400
+
+    if add_withdrawal_request(admin_id, amount):
+        update_admin_balance(admin_id, -Decimal(str(amount)))
+        return jsonify({'message': 'Solicitação de saque enviada'}), 200
+    else:
+        return jsonify({'error': 'Erro ao processar saque'}), 500
+
+@app.route('/admin/withdrawals', methods=['GET'])
+def get_withdrawals():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    table = dynamodb.Table('admin_balance')
+    response = table.get_item(Key={'admin_id': admin_id})
+    if 'Item' in response:
+        withdrawals = response['Item'].get('withdrawal_requests', [])
+        return jsonify({'withdrawals': withdrawals}), 200
+    return jsonify({'withdrawals': []}), 200
+
+@app.route('/admin/mark_withdrawal_done', methods=['POST'])
+def mark_withdrawal_done():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    data = request.json
+    index = data.get('index')
+
+    if index is None:
+        return jsonify({'error': 'Index is required'}), 400
+
+    if mark_withdrawal_as_done(admin_id, index):
+        return jsonify({'message': 'Saque marcado como realizado'}), 200
+    else:
+        return jsonify({'error': 'Erro ao marcar saque como realizado'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=3000)
