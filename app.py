@@ -446,13 +446,16 @@ def register():
     email = data.get("email")
     password = data.get("password")
     name = data.get("name")
+    birthdate = data.get("birthdate")
+    gender = data.get("gender")
+    phone_number = data.get("phone_number")
 
-    if not email or not password or not name:
+    if not email or not password or not name or not birthdate or not gender or not phone_number:
         return jsonify({"error": "Todos os campos são obrigatórios."}), 400
 
     try:
         print(f"Registrando usuário: {email}")  # Debug
-        response = cognito_service.sign_up(email, password, name)
+        response = cognito_service.sign_up(email, password, name, birthdate, gender, phone_number)
         print(f"Resposta do Cognito: {response}")  # Debug
         return jsonify({"message": "Usuário registrado com sucesso!", "data": response}), 201
     except Exception as e:
@@ -475,6 +478,22 @@ def verify():
         return jsonify({"message": "E-mail verificado com sucesso!", "data": response}), 200
     except Exception as e:
         print(f"Erro ao verificar código: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+@app.route("/resend-code", methods=["POST"])
+def resend_code():
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"error": "E-mail é obrigatório."}), 400
+
+    try:
+        print(f"Reenviando código de confirmação para: {email}")  # Debug
+        response = cognito_service.resend_confirmation_code(email)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Código de confirmação reenviado com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao reenviar código de confirmação: {str(e)}")  # Debug
         return jsonify({"error": str(e)}), 400
 
 @app.route("/login", methods=["POST"])
@@ -530,6 +549,42 @@ def logout():
         print(f"Erro ao fazer logout: {str(e)}")  # Debug
         return jsonify({"error": str(e)}), 400
 
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"error": "E-mail é obrigatório."}), 400
+
+    try:
+        print(f"Solicitando redefinição de senha para: {email}")  # Debug
+        response = cognito_service.forgot_password(email)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Código de redefinição de senha enviado com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao solicitar redefinição de senha: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/confirm-forgot-password", methods=["POST"])
+def confirm_forgot_password():
+    data = request.json
+    email = data.get("email")
+    code = data.get("code")
+    new_password = data.get("new_password")
+
+    if not email or not code or not new_password:
+        return jsonify({"error": "E-mail, código e nova senha são obrigatórios."}), 400
+
+    try:
+        print(f"Confirmando redefinição de senha para: {email}")  # Debug
+        response = cognito_service.confirm_forgot_password(email, code, new_password)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Senha redefinida com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao confirmar redefinição de senha: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+
 @app.route("/user", methods=["GET"])
 def get_user():
     access_token = request.headers.get("Authorization")
@@ -576,6 +631,26 @@ def get_user_id_by_email():
     else:
         # Retorna a mensagem de erro
         return jsonify({"status": "error", "message": result["message"]}), 404
+@app.route("/update_user", methods=["POST"])
+def update_user():
+    data = request.json
+    access_token = request.headers.get("Authorization")
+
+    if not access_token:
+        return jsonify({"error": "Token de acesso é obrigatório."}), 400
+
+    # Removendo "Bearer " caso esteja presente
+    if access_token.startswith("Bearer "):
+        access_token = access_token[7:]
+
+    try:
+        print(f"Atualizando informações do usuário para o token: {access_token}")  # Debug
+        response = cognito_service.update_user(access_token, data)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Usuário atualizado com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao atualizar informações do usuário: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
     
 @app.route('/admin/balance', methods=['GET'])
 def get_balance():
