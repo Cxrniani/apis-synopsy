@@ -220,39 +220,44 @@ def listar_lotes():
     return response.get('Items', [])
 
 def editar_lote(id, nome=None, descricao=None, valor=None, quantidade=None):
-    """Edita um lote existente."""
+    """Edita um lote existente no DynamoDB."""
     table = dynamodb.Table(LOTES_TABLE)
     update_expression = []
     expression_attribute_values = {}
+    expression_attribute_names = {}
 
     if nome is not None:
-        update_expression.append('SET #nome = :nome')
+        update_expression.append('#nome = :nome')
         expression_attribute_values[':nome'] = nome
+        expression_attribute_names['#nome'] = 'nome'
+
     if descricao is not None:
-        update_expression.append('SET #descricao = :descricao')
+        update_expression.append('#descricao = :descricao')
         expression_attribute_values[':descricao'] = descricao
+        expression_attribute_names['#descricao'] = 'descricao'
+
     if valor is not None:
-        update_expression.append('SET #valor = :valor')
+        update_expression.append('#valor = :valor')
         expression_attribute_values[':valor'] = valor
+        expression_attribute_names['#valor'] = 'valor'
+
     if quantidade is not None:
-        update_expression.append('SET #quantidade = :quantidade')
+        update_expression.append('#quantidade = :quantidade')
         expression_attribute_values[':quantidade'] = quantidade
+        expression_attribute_names['#quantidade'] = 'quantidade'
 
     if update_expression:
         response = table.update_item(
             Key={'id': id},
-            UpdateExpression=', '.join(update_expression),
-            ExpressionAttributeNames={
-                '#nome': 'nome',
-                '#descricao': 'descricao',
-                '#valor': 'valor',
-                '#quantidade': 'quantidade'
-            },
+            UpdateExpression='SET ' + ', '.join(update_expression),  # Corrigido aqui
+            ExpressionAttributeNames=expression_attribute_names if expression_attribute_names else None,
             ExpressionAttributeValues=expression_attribute_values,
             ReturnValues='UPDATED_NEW'
         )
         return response.get('Attributes') is not None
-    return False
+    
+    return False  # Nenhum dado foi atualizado
+
 
 def excluir_lote(id):
     """Exclui um lote pelo ID."""
