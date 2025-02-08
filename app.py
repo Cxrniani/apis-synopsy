@@ -479,6 +479,7 @@ def verify():
     except Exception as e:
         print(f"Erro ao verificar código: {str(e)}")  # Debug
         return jsonify({"error": str(e)}), 400
+    
 @app.route("/resend-code", methods=["POST"])
 def resend_code():
     data = request.json
@@ -631,6 +632,7 @@ def get_user_id_by_email():
     else:
         # Retorna a mensagem de erro
         return jsonify({"status": "error", "message": result["message"]}), 404
+    
 @app.route("/update_user", methods=["POST"])
 def update_user():
     data = request.json

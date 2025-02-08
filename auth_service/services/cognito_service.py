@@ -94,6 +94,7 @@ class CognitoService:
             return response
         except ClientError as e:
             raise Exception(e.response["Error"]["Message"])
+        
     def forgot_password(self, email):
         try:
             response = self.client.forgot_password(
@@ -148,6 +149,7 @@ class CognitoService:
             if e.response["Error"]["Code"] == "UserNotFoundException":
                 return {"status": "error", "message": "Usuário não encontrado"}
             raise Exception(e.response["Error"]["Message"])
+        
     def resend_confirmation_code(self, email):
         try:
             response = self.client.resend_confirmation_code(
@@ -163,9 +165,10 @@ class CognitoService:
             response = self.client.update_user_attributes(
                 AccessToken=access_token,
                 UserAttributes=[
-                    {"Name": "address", "Value": user_data.get("address")},
-                    {"Name": "gender", "Value": user_data.get("gender")},
-                    {"Name": "phone_number", "Value": user_data.get("phone_number")},
+                    {"Name": "name", "Value": user_data.get("name", "")},  # Novo atributo: name
+                    {"Name": "birthdate", "Value": user_data.get("birthdate", "")},  # Novo atributo: birthdate
+                    {"Name": "gender", "Value": user_data.get("gender", "")},  # Atributo existente: gender
+                    {"Name": "phone_number", "Value": user_data.get("phone_number", "")},  # Atributo existente: phone_number
                 ]
             )
             return response
