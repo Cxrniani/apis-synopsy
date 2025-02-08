@@ -3,6 +3,7 @@ import boto3
 from botocore.exceptions import ClientError, WaiterError
 from dotenv import load_dotenv
 from decimal import Decimal
+import uuid
 
 load_dotenv()
 
@@ -60,6 +61,23 @@ def ensure_table_exists():
         )
         waiter = dynamodb.meta.client.get_waiter('table_exists')
         waiter.wait(TableName=LOTES_TABLE, WaiterConfig={'Delay': 2, 'MaxAttempts': 10})
+    except ClientError as e:
+        if e.response['Error']['Code'] != 'ResourceInUseException':
+            raise
+    try:
+        # Tabela de saldo e saques
+        dynamodb.create_table(
+            TableName='admin_balance',
+            KeySchema=[
+                {'AttributeName': 'admin_id', 'KeyType': 'HASH'}  # Partition key
+            ],
+            AttributeDefinitions=[
+                {'AttributeName': 'admin_id', 'AttributeType': 'S'}
+            ],
+            ProvisionedThroughput={'ReadCapacityUnits': 5, 'WriteCapacityUnits': 5}
+        )
+        waiter = dynamodb.meta.client.get_waiter('table_exists')
+        waiter.wait(TableName='admin_balance', WaiterConfig={'Delay': 2, 'MaxAttempts': 10})
     except ClientError as e:
         if e.response['Error']['Code'] != 'ResourceInUseException':
             raise
@@ -256,3 +274,62 @@ def get_user_tickets(user_id, event_id=None):
             ExpressionAttributeValues={':user_id': user_id}
         )
     return response.get('Items', [])
+
+def get_admin_balance(admin_id):
+    """Recupera o saldo do administrador."""
+    table = dynamodb.Table('admin_balance')
+    response = table.get_item(Key={'admin_id': admin_id})
+    if 'Item' in response:
+        return response['Item'].get('balance', Decimal('0'))
+    return Decimal('0')
+
+def update_admin_balance(admin_id, amount):
+    """Atualiza o saldo do administrador."""
+    table = dynamodb.Table('admin_balance')
+    try:
+        table.update_item(
+            Key={'admin_id': admin_id},
+            UpdateExpression='SET balance = if_not_exists(balance, :zero) + :amount',
+            ExpressionAttributeValues={':amount': Decimal(str(amount)), ':zero': Decimal('0')},
+            ReturnValues='UPDATED_NEW'
+        )
+        return True
+    except ClientError as e:
+        print(f"Erro ao atualizar saldo: {e}")
+        return False
+
+def add_withdrawal_request(admin_id, amount):
+    """Adiciona uma solicitação de saque."""
+    table = dynamodb.Table('admin_balance')
+    try:
+        table.update_item(
+            Key={'admin_id': admin_id},
+            UpdateExpression='SET withdrawal_requests = list_append(if_not_exists(withdrawal_requests, :empty_list), :request)',
+            ExpressionAttributeValues={
+                ':request': [{'amount': Decimal(str(amount)), 'status': 'pending'}],
+                ':empty_list': []
+            },
+            ReturnValues='UPDATED_NEW'
+        )
+        return True
+    except ClientError as e:
+        print(f"Erro ao adicionar solicitação de saque: {e}")
+        return False
+
+def mark_withdrawal_as_done(admin_id, index):
+    """Marca um saque como realizado."""
+    table = dynamodb.Table('admin_balance')
+    try:
+        table.update_item(
+            Key={'admin_id': admin_id},
+            UpdateExpression=f'SET withdrawal_requests[{index}].#status = :done',
+            ExpressionAttributeNames={
+                '#status': 'status'  # Mapeia a palavra reservada "status" para um alias
+            },
+            ExpressionAttributeValues={':done': 'done'},
+            ReturnValues='UPDATED_NEW'
+        )
+        return True
+    except ClientError as e:
+        print(f"Erro ao marcar saque como realizado: {e}")
+        return False

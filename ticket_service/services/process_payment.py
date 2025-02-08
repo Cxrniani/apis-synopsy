@@ -19,7 +19,7 @@ def process_payment(payment_data):
     try:
         request_options = mercadopago.config.RequestOptions()
         request_options.custom_headers = {
-            "x-idempotency-key": str(uuid.uuid4())
+            "x-idempotency-key": str(uuid.uuid4()),
         }
 
 
@@ -93,7 +93,6 @@ def process_payment_pix(payment_data):
                     "number": payment_data["payer"]["identification"]["number"]
                 }
             },
-            "application_fee": payment_data["application_fee"],  # Taxa de aplicação
             "external_reference": payment_data["external_reference"]  # Referência externa
         }, request_options)
         print(payment_response)  # Log para depuração

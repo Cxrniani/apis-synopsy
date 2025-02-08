@@ -76,25 +76,26 @@ def get_news(news_id):
 @app.route('/generate_ticket', methods=['POST'])
 def generate_ticket():
     data = request.json
-    
+    event_id = data.get('event_id')
     name = data.get('name')
     email = data.get('email')
     cpf = data.get('cpf')
     table = data.get('table')
     user_id = data.get('user_id')
-    quantity = data.get('quantity', 1)  # Quantidade de tickets a serem gerados
-
-    print("Dados recebidos:", data)  # Log para debug
+    quantity = data.get('quantity', 1)
+    price = float(data.get('price'))
+    lot = data.get('lot')
 
     if not all([event_id, name, email, cpf, user_id, lot]) or price is None:
         return jsonify({'error': 'Dados incompletos'}), 400
 
-
     tickets = []
     for _ in range(quantity):
-        code = generate_code()  # Função para gerar código único
+        code = generate_code()
         if store_ticket(event_id, code, name, email, cpf, user_id, Decimal(str(price)), lot):
             tickets.append({'code': code})
+            # Atualiza o saldo do administrador
+            update_admin_balance('7b87fd15-bea4-4fff-9033-9224fc0c8a01', price)  # Substitua 'admin_id' pelo ID real do administrador
         else:
             return jsonify({'error': 'Código já existente'}), 409
 
@@ -294,7 +295,6 @@ def process_payment_route():
                     "federal_unit": data['address']['state']
                 }
             },
-            "application_fee": data["application_fee"],
             "external_reference": external_reference
         }
         print("Iniciando o processamento de pagamento com os dados:", payment_data)
@@ -474,13 +474,16 @@ def register():
     email = data.get("email")
     password = data.get("password")
     name = data.get("name")
+    birthdate = data.get("birthdate")
+    gender = data.get("gender")
+    phone_number = data.get("phone_number")
 
-    if not email or not password or not name:
+    if not email or not password or not name or not birthdate or not gender or not phone_number:
         return jsonify({"error": "Todos os campos são obrigatórios."}), 400
 
     try:
         print(f"Registrando usuário: {email}")  # Debug
-        response = cognito_service.sign_up(email, password, name)
+        response = cognito_service.sign_up(email, password, name, birthdate, gender, phone_number)
         print(f"Resposta do Cognito: {response}")  # Debug
         return jsonify({"message": "Usuário registrado com sucesso!", "data": response}), 201
     except Exception as e:
@@ -503,6 +506,22 @@ def verify():
         return jsonify({"message": "E-mail verificado com sucesso!", "data": response}), 200
     except Exception as e:
         print(f"Erro ao verificar código: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+@app.route("/resend-code", methods=["POST"])
+def resend_code():
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"error": "E-mail é obrigatório."}), 400
+
+    try:
+        print(f"Reenviando código de confirmação para: {email}")  # Debug
+        response = cognito_service.resend_confirmation_code(email)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Código de confirmação reenviado com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao reenviar código de confirmação: {str(e)}")  # Debug
         return jsonify({"error": str(e)}), 400
 
 @app.route("/login", methods=["POST"])
@@ -558,6 +577,42 @@ def logout():
         print(f"Erro ao fazer logout: {str(e)}")  # Debug
         return jsonify({"error": str(e)}), 400
 
+@app.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"error": "E-mail é obrigatório."}), 400
+
+    try:
+        print(f"Solicitando redefinição de senha para: {email}")  # Debug
+        response = cognito_service.forgot_password(email)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Código de redefinição de senha enviado com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao solicitar redefinição de senha: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+
+@app.route("/confirm-forgot-password", methods=["POST"])
+def confirm_forgot_password():
+    data = request.json
+    email = data.get("email")
+    code = data.get("code")
+    new_password = data.get("new_password")
+
+    if not email or not code or not new_password:
+        return jsonify({"error": "E-mail, código e nova senha são obrigatórios."}), 400
+
+    try:
+        print(f"Confirmando redefinição de senha para: {email}")  # Debug
+        response = cognito_service.confirm_forgot_password(email, code, new_password)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Senha redefinida com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao confirmar redefinição de senha: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+
 @app.route("/user", methods=["GET"])
 def get_user():
     access_token = request.headers.get("Authorization")
@@ -604,6 +659,75 @@ def get_user_id_by_email():
     else:
         # Retorna a mensagem de erro
         return jsonify({"status": "error", "message": result["message"]}), 404
+@app.route("/update_user", methods=["POST"])
+def update_user():
+    data = request.json
+    access_token = request.headers.get("Authorization")
+
+    if not access_token:
+        return jsonify({"error": "Token de acesso é obrigatório."}), 400
+
+    # Removendo "Bearer " caso esteja presente
+    if access_token.startswith("Bearer "):
+        access_token = access_token[7:]
+
+    try:
+        print(f"Atualizando informações do usuário para o token: {access_token}")  # Debug
+        response = cognito_service.update_user(access_token, data)
+        print(f"Resposta do Cognito: {response}")  # Debug
+        return jsonify({"message": "Usuário atualizado com sucesso!", "data": response}), 200
+    except Exception as e:
+        print(f"Erro ao atualizar informações do usuário: {str(e)}")  # Debug
+        return jsonify({"error": str(e)}), 400
+    
+@app.route('/admin/balance', methods=['GET'])
+def get_balance():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    balance = get_admin_balance(admin_id)
+    return jsonify({'balance': float(balance)}), 200
+
+@app.route('/admin/withdraw', methods=['POST'])
+def withdraw():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    data = request.json
+    amount = data.get('amount')
+
+    if amount is None:
+        return jsonify({'error': 'Amount is required'}), 400
+
+    balance = get_admin_balance(admin_id)
+    if balance < Decimal(str(amount)):
+        return jsonify({'error': 'Saldo insuficiente'}), 400
+
+    if add_withdrawal_request(admin_id, amount):
+        update_admin_balance(admin_id, -Decimal(str(amount)))
+        return jsonify({'message': 'Solicitação de saque enviada'}), 200
+    else:
+        return jsonify({'error': 'Erro ao processar saque'}), 500
+
+@app.route('/admin/withdrawals', methods=['GET'])
+def get_withdrawals():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    table = dynamodb.Table('admin_balance')
+    response = table.get_item(Key={'admin_id': admin_id})
+    if 'Item' in response:
+        withdrawals = response['Item'].get('withdrawal_requests', [])
+        return jsonify({'withdrawals': withdrawals}), 200
+    return jsonify({'withdrawals': []}), 200
+
+@app.route('/admin/mark_withdrawal_done', methods=['POST'])
+def mark_withdrawal_done():
+    admin_id = '7b87fd15-bea4-4fff-9033-9224fc0c8a01'  # Substitua pelo ID real do administrador
+    data = request.json
+    index = data.get('index')
+
+    if index is None:
+        return jsonify({'error': 'Index is required'}), 400
+
+    if mark_withdrawal_as_done(admin_id, index):
+        return jsonify({'message': 'Saque marcado como realizado'}), 200
+    else:
+        return jsonify({'error': 'Erro ao marcar saque como realizado'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=3000)

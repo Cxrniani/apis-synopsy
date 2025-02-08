@@ -20,25 +20,33 @@ class CognitoService:
     
     def check_email_exists(self, email):
         try:
+            # Tenta encontrar usuários, incluindo os não confirmados
             response = self.client.list_users(
                 UserPoolId=self.user_pool_id,
                 Filter=f'email = "{email}"'
             )
-            exists = len(response["Users"]) > 0
-            return {"exists": exists}
+            if len(response["Users"]) > 0:
+                user_status = response["Users"][0].get("UserStatus")
+                if user_status == "UNCONFIRMED":
+                    return {"exists": True, "status": "Usuário não confirmado"}
+                return {"exists": True, "status": "Usuário já registrado"}
+            return {"exists": False, "status": "Usuário não encontrado"}
         except ClientError as e:
             raise Exception(e.response["Error"]["Message"])
-    
-    def sign_up(self, email, password, name):
-            # Validação de senha
-        if not re.match(r"^(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?\":{}|<>])[A-Za-z\d!@#$%^&*(),.?\":{}|<>]{8,}$", password):
-            raise Exception("A senha não atende aos requisitos mínimos")
+
+    def sign_up(self, email, password, name, birthdate, gender, phone_number):
         try:
             response = self.client.sign_up(
                 ClientId=self.client_id,
                 Username=email,
                 Password=password,
-                UserAttributes=[{"Name": "name", "Value": name}, {"Name": "email", "Value": email}],
+                UserAttributes=[
+                    {"Name": "name", "Value": name},
+                    {"Name": "email", "Value": email},
+                    {"Name": "birthdate", "Value": birthdate},
+                    {"Name": "gender", "Value": gender},
+                    {"Name": "phone_number", "Value": phone_number},
+                ],
             )
             return response
         except ClientError as e:
@@ -95,6 +103,7 @@ class CognitoService:
             return response
         except ClientError as e:
             raise Exception(e.response["Error"]["Message"])
+
     def confirm_forgot_password(self, email, code, new_password):
         try:
             response = self.client.confirm_forgot_password(
@@ -139,4 +148,26 @@ class CognitoService:
             if e.response["Error"]["Code"] == "UserNotFoundException":
                 return {"status": "error", "message": "Usuário não encontrado"}
             raise Exception(e.response["Error"]["Message"])
-    
+    def resend_confirmation_code(self, email):
+        try:
+            response = self.client.resend_confirmation_code(
+                ClientId=self.client_id,
+                Username=email
+            )
+            return response
+        except ClientError as e:
+            raise Exception(e.response["Error"]["Message"])
+        
+    def update_user(self, access_token, user_data):
+        try:
+            response = self.client.update_user_attributes(
+                AccessToken=access_token,
+                UserAttributes=[
+                    {"Name": "address", "Value": user_data.get("address")},
+                    {"Name": "gender", "Value": user_data.get("gender")},
+                    {"Name": "phone_number", "Value": user_data.get("phone_number")},
+                ]
+            )
+            return response
+        except ClientError as e:
+            raise Exception(e.response["Error"]["Message"])
