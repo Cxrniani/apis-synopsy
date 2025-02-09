@@ -1,50 +1,146 @@
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import re
+import base64
+from ticket_service.services.generate_qrcode_service import generate_qr_code
+from ticket_service.services.generate_code_service import generate_code
 from ticket_service.utils.db import *
 from ticket_service.services.process_payment import *
-from ticket_service.services.generate_code_service import generate_code
 import requests
 from auth_service.services.cognito_service import *
 import jwt
-from news_service.db import init_news_db, add_news, get_all_news
-from decimal import Decimal
+from news_service.db import init_news_db, add_news, get_all_news, get_news_by_id, upload_image_to_s3,upload_base64_to_s3
+from werkzeug.utils import secure_filename
+import uuid
+import sqlite3
+from datetime import datetime
+from bs4 import BeautifulSoup
+
+load_dotenv()
+AWS_REGION = os.environ['AWS_REGION']
+S3_BUCKET_NAME = os.environ['S3_BUCKET_NAME']
+s3_client = boto3.client(
+    's3',
+    region_name=AWS_REGION,
+    aws_access_key_id=os.environ['AWS_ACCESS_KEY_ID'],
+    aws_secret_access_key=os.environ['AWS_SECRET_ACCESS_KEY']
+)
+
 cognito_service = CognitoService()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 init_news_db()
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 5MB
 
-# Função para validar imagens Base64
-def is_base64(string: str) -> bool:
-    base64_pattern = re.compile(r"^data:image\/(png|jpg|jpeg);base64,")
-    return bool(base64_pattern.match(string))
+@app.route('/api/upload', methods=['POST'])
+def handle_file_upload():
+    print("\n=== Novo upload de imagem do editor ===")
+    print("Headers:", request.headers)
+    print("Form data:", request.form)
+    print("Files:", request.files)
+    if 'file' not in request.files:
+        return jsonify({"error": "Nenhum arquivo enviado"}), 400
+        
+    file = request.files['file']
+    print(f"Arquivo recebido: {file.filename}, tipo: {file.content_type}")
+    if file.filename == '':
+        return jsonify({"error": "Nome de arquivo inválido"}), 400
+
+    try:
+        # Gera nome único para o arquivo com caminho específico
+        filename = f"editor/{uuid.uuid4()}-{secure_filename(file.filename)}"
+        image_url = upload_image_to_s3(file, filename)
+        
+        return jsonify({"url": image_url}), 200
+    except Exception as e:
+        print(f"Erro no upload: {str(e)}")
+        return jsonify({"error": "Erro ao processar imagem"}), 500
 
 @app.route('/news/create', methods=['POST'])
 def create_news():
-    data = request.json
-    image = data.get('image')
-    title = data.get('title')
-    subtitle = data.get('subtitle')
-    date = data.get('date')
-    content = data.get('content')  # Novo campo
-
-    if not all([image, title, subtitle, date, content]):  # Verifique se todos os campos obrigatórios estão presentes
-        return jsonify({"error": "Todos os campos são obrigatórios."}), 400
-
-    # Verificar se a imagem está em Base64
-    if not is_base64(image):
-        return jsonify({"error": "Formato de imagem inválido. A imagem deve estar em Base64."}), 400
-
     try:
-        # Adicionando log para verificar o que está sendo enviado
-        print("Dados recebidos:", data)
+        # Validação básica
+        if 'coverImage' not in request.files or 'content' not in request.form:
+            return jsonify({"error": "Campos obrigatórios: coverImage e content"}), 400
 
-        news_id = add_news(image, title, subtitle, date, content)  # Passando content
-        return jsonify({"message": "Notícia adicionada com sucesso!", "news_id": news_id}), 201
+        cover_image = request.files['coverImage']
+        content = request.form['content']
+
+        # Upload capa
+        cover_filename = f"covers/{uuid.uuid4()}-{secure_filename(cover_image.filename)}"
+        cover_url = upload_image_to_s3(cover_image, cover_filename)
+
+        # Processar conteúdo
+        processed_content = process_quill_images(content)
+        title, subtitle, clean_content = parse_html_content(processed_content)
+
+        # Adicionar ao banco
+        news_id = add_news(
+            cover_url,
+            title,
+            subtitle,
+            clean_content,
+            datetime.now().isoformat()
+        )
+
+        return jsonify({
+            "id": news_id,
+            "cover_url": cover_url,
+            "title": title,
+            "subtitle": subtitle
+        }), 201
+
     except Exception as e:
-        print("Erro ao adicionar notícia:", str(e))  # Log do erro
+        print(f"Erro: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+def process_quill_images(html_content):
+    """Substitui TODAS as imagens (base64 e URLs) por S3"""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    for img_tag in soup.find_all('img'):
+        src = img_tag.get('src', '')
+        
+        # Se for base64
+        if src.startswith('data:image'):
+            try:
+                # Extrai tipo e dados da string base64
+                match = re.match(r'data:image/(?P<ext>\w+);base64,(?P<data>.+)', src)
+                if match:
+                    ext = match.group('ext')
+                    data = match.group('data')
+                    
+                    # Upload para S3
+                    image_url = upload_base64_to_s3(data, ext)
+                    img_tag['src'] = image_url
+                else:
+                    img_tag.decompose()
+                    
+            except Exception as e:
+                print(f"Erro processando imagem: {str(e)}")
+                img_tag.decompose()
+    
+    return str(soup)
+
+def parse_html_content(html):
+    """Extrai E REMOVE h1/h2 do conteúdo"""
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Extrai e remove h1
+    h1_tag = soup.find('h1')
+    title = h1_tag.get_text(strip=True) if h1_tag else 'Sem título'
+    if h1_tag:
+        h1_tag.decompose()
+    
+    # Extrai e remove h2
+    h2_tag = soup.find('h2')
+    subtitle = h2_tag.get_text(strip=True) if h2_tag else 'Sem subtítulo'
+    if h2_tag:
+        h2_tag.decompose()
+    
+    return title, subtitle, str(soup)  # ← conteúdo SEM h1/h2
 
 @app.route('/news', methods=['GET'])
 def get_all_news_route():
@@ -54,8 +150,8 @@ def get_all_news_route():
         'image': n[1],
         'title': n[2],
         'subtitle': n[3],
-        'date': n[4],
-        'content': n[5]  # Incluindo o conteúdo da notícia
+        'content': n[4],  # Corrigido: conteúdo é a 4ª coluna
+        'date': n[5]      # Corrigido: data é a 5ª coluna
     } for n in news]), 200
 
 @app.route('/news/<int:news_id>', methods=['GET'])
@@ -67,8 +163,8 @@ def get_news(news_id):
             'image': news[1],
             'title': news[2],
             'subtitle': news[3],
-            'date': news[4],
-            'content': news[5]  # Incluindo o conteúdo da notícia
+            'content': news[4],  # Corrigido
+            'date': news[5]      # Corrigido
         }), 200
     else:
         return jsonify({"error": "Notícia não encontrada"}), 404
@@ -82,9 +178,7 @@ def generate_ticket():
     cpf = data.get('cpf')
     table = data.get('table')
     user_id = data.get('user_id')
-    quantity = data.get('quantity', 1)
-    price = float(data.get('price'))
-    lot = data.get('lot')
+    quantity = data.get('quantity', 1)  # Quantidade de tickets a serem gerados
 
     if not all([event_id, name, email, cpf, user_id, lot]) or price is None:
         return jsonify({'error': 'Dados incompletos'}), 400
@@ -102,41 +196,47 @@ def generate_ticket():
     return jsonify({'tickets': tickets}), 201
 
 
-@app.route('/tickets/<event_id>/<code>', methods=['GET'])
-def read_ticket(event_id, code):
-    ticket = get_ticket(event_id, code)
+@app.route('/tickets/<code>', methods=['GET'])
+def read_ticket(code):
+    table = request.args.get('table')  # Pega o nome da tabela do parâmetro de consulta
+    ticket = get_ticket(code, table)
+    
     if ticket:
-        return jsonify(ticket), 200
+        return jsonify({'code': ticket[0], 'name': ticket[1], 'email': ticket[2], 'cpf': ticket[3]}), 200
     else:
         return jsonify({'error': 'Ingresso não encontrado'}), 404
 
-@app.route('/tickets/<event_id>', methods=['GET'])
-def read_all_tickets(event_id):
-    tickets = get_all_tickets(event_id)
-    return jsonify(tickets), 200
+@app.route('/tickets', methods=['GET'])
+def read_all_tickets():
+    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
+    tickets = get_all_tickets(table)
+    
+    return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3], 'qr_code_path': t[4]} for t in tickets]), 200
 
-@app.route('/tickets/<event_id>/<code>', methods=['PUT'])
-def update_ticket_route(event_id, code):
+@app.route('/tickets/<code>', methods=['PUT'])
+def update_ticket_route(code):
     data = request.json
+    table = data.get('table', 'tickets')  # Pega o nome da tabela do corpo da requisição
     name = data.get('name')
     email = data.get('email')
     cpf = data.get('cpf')
 
-    if update_ticket(event_id, code, name, email, cpf):
+    if update_ticket(code, name=name, email=email, cpf=cpf, table=table):
         return jsonify({'message': 'Ingresso atualizado com sucesso'}), 200
     else:
         return jsonify({'error': 'Código não encontrado ou dados não alterados'}), 404
 
-@app.route('/tickets/<event_id>/<code>', methods=['DELETE'])
-def delete_ticket_route(event_id, code):
-    if delete_ticket(event_id, code):
+@app.route('/tickets/<code>', methods=['DELETE'])
+def delete_ticket_route(code):
+    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
+    if delete_ticket(code, table):
         return jsonify({'message': 'Ingresso deletado com sucesso'}), 200
     else:
         return jsonify({'error': 'Código não encontrado'}), 404
     
-@app.route('/tickets/<event_id>/<code>/validate', methods=['POST'])
-def validate_ticket(event_id, code):
-    if move_ticket_to_validated(event_id, code):
+@app.route('/tickets/<code>/validate', methods=['POST'])
+def validate_ticket(code):
+    if move_ticket_to_validated(code):
         return jsonify({'message': 'Ingresso validado e movido para a tabela de validados'}), 200
     else:
         return jsonify({'error': 'Ingresso não encontrado'}), 404
@@ -228,6 +328,9 @@ def webhook():
 
 @app.route('/process_payment', methods=['POST'])
 def process_payment_route():
+    """
+    Rota Flask para processar pagamentos.
+    """
     if not request.is_json:
         return jsonify({"success": False, "error": "Content-Type deve ser application/json"}), 400
 
@@ -261,7 +364,6 @@ def process_payment_route():
             errors.append(f"Campo '{field}' deve ser do tipo {field_type if isinstance(field_type, tuple) else field_type.__name__}")
 
     if errors:
-        print("Erros de validação:", errors)  # Log para debug
         return jsonify({"success": False, "error": "; ".join(errors)}), 400
 
     # Preparar os dados para a função process_payment
@@ -297,7 +399,6 @@ def process_payment_route():
             },
             "external_reference": external_reference
         }
-        print("Iniciando o processamento de pagamento com os dados:", payment_data)
     except (ValueError, TypeError) as e:
         return jsonify({"success": False, "error": f"Erro ao converter dados: {str(e)}"}), 400
 
@@ -407,7 +508,13 @@ def process_payment_pix_route():
 @app.route('/lotes', methods=['GET'])
 def listar_lotes_route():
     lotes = listar_lotes()
-    return jsonify(lotes), 200
+    return jsonify([{
+        "id": lote[0],
+        "nome": lote[1],
+        "descricao": lote[2],
+        "valor": lote[3],
+        "quantidade": lote[4]
+    } for lote in lotes]), 200
 
 @app.route('/lotes', methods=['POST'])
 def adicionar_lote_route():
@@ -443,13 +550,14 @@ def excluir_lote_route(id):
     else:
         return jsonify({'error': 'Lote não encontrado'}), 404
     
-
 @app.route('/user_tickets/<user_id>', methods=['GET'])
-def get_user_tickets_route(user_id):
-    event_id = request.args.get('event_id')  # Filtro opcional por evento
-    tickets = get_user_tickets(user_id, event_id)
-    return jsonify(tickets), 200
-
+def get_user_tickets(user_id):
+    table = request.args.get('table', 'tickets')  # Pega o nome da tabela do parâmetro de consulta
+    with sqlite3.connect(DATABASE) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f'SELECT * FROM {table} WHERE user_id = ?', (user_id,))
+        tickets = cursor.fetchall()
+        return jsonify([{'code': t[0], 'name': t[1], 'email': t[2], 'cpf': t[3]} for t in tickets]), 200
     
 @app.route("/check-email", methods=["POST"])
 def check_email():

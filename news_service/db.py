@@ -6,6 +6,7 @@ from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from datetime import datetime
 import base64
+import uuid
 
 load_dotenv()
 
@@ -29,31 +30,6 @@ s3_client = boto3.client(
     aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     region_name=AWS_REGION
 )
-
-def upload_image_to_s3(image_base64):
-    """Faz o upload de uma imagem para o S3 e retorna a URL pública."""
-    try:
-        # Decodificar a imagem de Base64
-        image_data = base64.b64decode(image_base64.split(",")[1])  # Remover cabeçalho base64
-
-        # Gerar um nome único para o arquivo (com base na data e hora)
-        image_filename = f"image_{datetime.now().strftime('%Y%m%d%H%M%S')}.png"
-
-        # Enviar a imagem para o S3
-        s3_client.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=f"news/images/{image_filename}",  # Caminho dentro do bucket
-            Body=image_data,
-            ContentType="image/png"
-        )
-
-        # Retornar o caminho completo da imagem no S3
-        image_url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/news/images/{image_filename}"
-        return image_url
-
-    except ClientError as e:
-        raise Exception(f"Erro ao enviar a imagem para o S3: {e}")
-    
 def init_news_db():
     os.makedirs(NEWS_DIRETORIO, exist_ok=True)
     
@@ -72,9 +48,43 @@ def init_news_db():
         ''')
         conn.commit()
 
-def add_news(image_base64, title, subtitle, content, date):
-    """Adiciona uma notícia ao banco de dados com a URL da imagem no S3."""
-    image_url = upload_image_to_s3(image_base64)  # Upload da imagem para o S3
+def upload_image_to_s3(file, filename):
+    """Upload de arquivo binário para o S3"""
+    try:
+        s3_client.upload_fileobj(
+            file,
+            S3_BUCKET_NAME,
+            filename,
+            ExtraArgs={
+                'ContentType': file.content_type
+            }
+        )
+        return f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{filename}"
+    except ClientError as e:
+        raise Exception(f"Erro S3: {e}")
+
+def upload_base64_to_s3(base64_data, ext):
+    """Faz upload de imagens base64 para o S3"""
+    try:
+        # Gera nome único com a extensão correta
+        filename = f"editor/{uuid.uuid4()}.{ext}"
+        # Decodifica os dados
+        image_data = base64.b64decode(base64_data)
+        
+        # Faz upload
+        s3_client.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=filename,
+            Body=image_data,
+            ContentType=f"image/{ext}"
+        )
+        
+        return f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{filename}"
+    except Exception as e:
+        raise Exception(f"Erro ao processar base64: {str(e)}")
+
+def add_news(image_url, title, subtitle, content, date):
+    """Adiciona notícia com URL da imagem já processada"""
     with sqlite3.connect(NEWS_DATABASE) as conn:
         cursor = conn.cursor()
         cursor.execute('''
