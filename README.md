@@ -2,6 +2,9 @@
 
 API do projeto **Etternal Nexus Experience**, desenvolvida com **Python + Flask**, integrada a diversos serviços AWS e Mercado Pago. Responsável por autenticação, gerenciamento de ingressos e integração de pagamentos.
 
+
+🔗 [Repositório do Frontend](https://github.com/Cxrniani/eternal-nexus-site/tree/master)
+
 ---
 
 ## 🧰 Tecnologias Utilizadas
